@@ -32,6 +32,76 @@ def split_train_test(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return df[~df["is_test"]], df[df["is_test"]]
 
 
+def split_train_val(
+    df: pd.DataFrame,
+    val_frac: float = config.DEFAULT_MLP_VAL_FRAC,
+    random_state: int | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Split training data into train and validation sets with stratification.
+
+    Stratifies by mean_gscore >= 0.5 (ordered vs disordered) at sequence level.
+
+    Args:
+        df: DataFrame with training sequences (should NOT include test set)
+        val_frac: Fraction of data to use for validation
+        random_state: Random seed for reproducible splits
+
+    Returns:
+        (df_train, df_val) tuple
+    """
+    # Create stratification column based on mean_gscore
+    strat_col = (df["mean_gscore"] >= 0.5).astype(int)
+
+    # Perform stratified split
+    rng = np.random.default_rng(random_state)
+    train_indices = []
+    val_indices = []
+
+    for stratum in [0, 1]:
+        stratum_indices = df.index[strat_col == stratum].tolist()
+        rng.shuffle(stratum_indices)
+        n_val = int(len(stratum_indices) * val_frac)
+        val_indices.extend(stratum_indices[:n_val])
+        train_indices.extend(stratum_indices[n_val:])
+
+    return df.loc[train_indices], df.loc[val_indices]
+
+
+def sample_st_training_data(
+    df_classes: pd.DataFrame,
+    train_frac: float = config.DEFAULT_ST_TRAIN_FRAC,
+    random_state: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Sample a subset of ST training data for ensemble diversity.
+
+    Creates a balanced subset by sampling train_frac from each class.
+
+    Args:
+        df_classes: DataFrame with 'sequence', 'class', and 'is_test' columns
+        train_frac: Fraction of each class to sample (default 0.9)
+        random_state: Random seed for reproducible sampling
+
+    Returns:
+        (sequences, classes) arrays
+    """
+    df_train = df_classes[~df_classes["is_test"]]
+
+    # Get min class count and compute sample size
+    class_counts = df_train["class"].value_counts()
+    min_count = class_counts.min()
+    num_samples = max(1, int(min_count * train_frac))
+
+    # Sample equal number from each class
+    balanced_df = pd.concat([
+        df_train[df_train["class"] == k].sample(num_samples, random_state=random_state)
+        for k in sorted(df_train["class"].unique())
+    ])
+
+    return balanced_df["sequence"].to_numpy(), balanced_df["class"].to_numpy()
+
+
 def generate_sequence_pairs(
     sequences: list[str],
     classes: np.ndarray,

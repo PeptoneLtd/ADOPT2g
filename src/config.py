@@ -7,6 +7,7 @@ ROOT_PATH = Path(__file__).resolve().parent.parent
 DATA_PATH = ROOT_PATH / "data"
 DATASETS_PATH = ROOT_PATH / "datasets"
 CHECKPOINTS_PATH = DATA_PATH / "checkpoints"
+ENSEMBLES_PATH = DATA_PATH / "ensembles"
 
 # ESM model for residue-level embeddings (dim 1280)
 ESM_MODEL_NAME = "facebook/esm2_t33_650M_UR50D"
@@ -50,3 +51,8 @@ MAX_SEQUENCE_LEN = 1022
 # Weights & Biases configuration
 WANDB_PROJECT = "adopt2g"
 WANDB_ENTITY = None
+
+# Ensemble configuration
+DEFAULT_ENSEMBLE_SIZE = 5
+DEFAULT_MLP_VAL_FRAC = 0.1
+DEFAULT_ST_TRAIN_FRAC = 0.9

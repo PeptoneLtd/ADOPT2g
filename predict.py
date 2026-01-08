@@ -26,35 +26,18 @@ from tqdm import tqdm
 from src import config
 from src.data import FastaIterator
 from src.ensemble import find_latest_ensemble
-from src.inference import EnsemblePrediction, load_ensemble_predictor, load_predictor
+from src.inference import load_ensemble_predictor, load_predictor
 
 
 def estimate_max_residues_per_batch() -> int:
     """Estimate max residues per GPU batch based on available memory."""
     if torch.cuda.is_available():
-        return int(np.round(torch.cuda.mem_get_info()[0] / 60_000_000))
-    return 10000  # Conservative default for CPU
-
-
-def count_residues(sequences: list[str]) -> int:
-    """Count total residues in a list of sequences."""
-    return sum(len(s) for s in sequences)
-
-
-def process_batch_ensemble(
-    predictor,
-    sequences: list[str],
-) -> list[EnsemblePrediction]:
-    """Process a batch with ensemble predictor."""
-    return predictor.predict(sequences)
-
-
-def process_batch_single(
-    predictor,
-    sequences: list[str],
-) -> list[list[float]]:
-    """Process a batch with single predictor."""
-    return predictor.predict(sequences)
+        free_mem_gb = torch.cuda.mem_get_info()[0] / 1e9
+        # Reserve ~3GB for models, use ~70% of remaining for safety
+        usable_gb = max(0.5, (free_mem_gb - 3.0) * 0.7)
+        # Empirical: ~5MB per residue for ESM2-650M fp16 forward pass
+        return int(usable_gb * 1e9 / 5_000_000)
+    return 10_000 # default for CPU
 
 
 def main() -> None:
@@ -147,7 +130,7 @@ Examples:
     n_digits = len(str(n_chunks))
     max_residues = estimate_max_residues_per_batch()
 
-    print(f"Processing {n_chunks} chunks, max {max_residues} residues per batch")
+    print(f"Processing {n_chunks} chunks, max {max_residues:_} residues per batch")
 
     for chunk_no, records in enumerate(tqdm(fasta_iter, total=n_chunks)):
         chunk_file = Path(f"{args.output}.{chunk_no:0{n_digits}d}")
@@ -168,10 +151,7 @@ Examples:
 
             if batch and batch_residues + seq_len > max_residues:
                 # Process current batch
-                if use_ensemble:
-                    all_predictions.extend(process_batch_ensemble(predictor, batch))
-                else:
-                    all_predictions.extend(process_batch_single(predictor, batch))
+                all_predictions.extend(predictor.predict(batch))
                 batch = []
                 batch_residues = 0
                 gc.collect()
@@ -183,10 +163,7 @@ Examples:
 
         # Process final batch
         if batch:
-            if use_ensemble:
-                all_predictions.extend(process_batch_ensemble(predictor, batch))
-            else:
-                all_predictions.extend(process_batch_single(predictor, batch))
+            all_predictions.extend(predictor.predict(batch))
 
         # Save chunk results
         results = []

@@ -196,17 +196,53 @@ def train_single_member(
     print(f"  MAE: {metrics['mae']:.4f}")
     print(f"  Spearman correlation: {metrics['spearman_corr']:.4f}")
 
-    # Log final metrics
+    # Log final metrics with rich visualizations
     if wandb.run is not None:
-        wandb.log(
-            {
-                "test/mse": metrics["mse"],
-                "test/mae": metrics["mae"],
-                "test/spearman_corr": metrics["spearman_corr"],
-                "test/pearson_r": metrics["pearson_r"],
-                "test/kendall_tau": metrics["kendall_tau"],
-            }
+        preds = metrics["predictions"]
+        targets = metrics["targets"]
+        residuals = preds - targets
+
+        # Basic metrics
+        log_dict = {
+            "test/mse": metrics["mse"],
+            "test/mae": metrics["mae"],
+            "test/spearman_corr": metrics["spearman_corr"],
+            "test/pearson_r": metrics["pearson_r"],
+            "test/kendall_tau": metrics["kendall_tau"],
+        }
+
+        # Histograms
+        log_dict["test/predictions_hist"] = wandb.Histogram(preds)
+        log_dict["test/targets_hist"] = wandb.Histogram(targets)
+        log_dict["test/residuals_hist"] = wandb.Histogram(residuals)
+
+        # Sample points for scatter plot (max 10000 to keep dashboard responsive)
+        n_samples = min(10000, len(preds))
+        sample_idx = np.random.choice(len(preds), n_samples, replace=False)
+        scatter_data = [[t, p] for t, p in zip(targets[sample_idx], preds[sample_idx])]
+        scatter_table = wandb.Table(data=scatter_data, columns=["target", "prediction"])
+        log_dict["test/pred_vs_target"] = wandb.plot.scatter(
+            scatter_table,
+            "target",
+            "prediction",
+            title=f"Test Set: Prediction vs Target (Member {member_id})",
         )
+
+        # Performance summary bar chart
+        summary_data = [
+            ["Spearman", metrics["spearman_corr"]],
+            ["Pearson", metrics["pearson_r"]],
+            ["Kendall", metrics["kendall_tau"]],
+        ]
+        summary_table = wandb.Table(data=summary_data, columns=["metric", "value"])
+        log_dict["test/correlation_summary"] = wandb.plot.bar(
+            summary_table,
+            "metric",
+            "value",
+            title="Test Set Correlation Metrics",
+        )
+
+        wandb.log(log_dict)
         wandb.save(str(mlp_path))
         wandb.finish()
 
@@ -231,10 +267,13 @@ def main() -> None:
         "--ensemble-size",
         type=int,
         default=config.DEFAULT_ENSEMBLE_SIZE,
-        help="Number of ensemble members (default: 5)",
+        help=f"Number of ensemble members (default: {config.DEFAULT_ENSEMBLE_SIZE})",
     )
     parser.add_argument(
-        "--ensemble-id", type=str, default=None, help="Ensemble ID (default: derived from seed and size)"
+        "--ensemble-id",
+        type=str,
+        default=None,
+        help="Ensemble ID (default: derived from seed and size)",
     )
     parser.add_argument("--seed", type=int, default=config.DEFAULT_SEED, help="Base seed")
 
@@ -243,13 +282,13 @@ def main() -> None:
         "--mlp-val-frac",
         type=float,
         default=config.DEFAULT_MLP_VAL_FRAC,
-        help="Fraction of training data for validation (default: 0.1)",
+        help=f"Fraction of training data for validation (default: {config.DEFAULT_MLP_VAL_FRAC})",
     )
     parser.add_argument(
         "--st-train-frac",
         type=float,
         default=config.DEFAULT_ST_TRAIN_FRAC,
-        help="Fraction of ST training data to use per member (default: 0.9)",
+        help=f"Fraction of ST training data to use per member (default: {config.DEFAULT_ST_TRAIN_FRAC})",
     )
 
     # Existing args
@@ -398,14 +437,87 @@ def main() -> None:
                     "base_seed": args.seed,
                 },
             )
-            wandb.log(
-                {
-                    "ensemble/mse_mean": np.mean(mse_vals),
-                    "ensemble/mse_std": np.std(mse_vals),
-                    "ensemble/spearman_mean": np.mean(corr_vals),
-                    "ensemble/spearman_std": np.std(corr_vals),
-                }
+
+            # Extract all metric arrays
+            mse_vals = np.array([m["mse"] for m in all_metrics])
+            mae_vals = np.array([m["mae"] for m in all_metrics])
+            spearman_vals = np.array([m["spearman_corr"] for m in all_metrics])
+            pearson_vals = np.array([m["pearson_r"] for m in all_metrics])
+            kendall_vals = np.array([m["kendall_tau"] for m in all_metrics])
+
+            log_dict = {
+                # Summary statistics
+                "ensemble/mse_mean": np.mean(mse_vals),
+                "ensemble/mse_std": np.std(mse_vals),
+                "ensemble/mae_mean": np.mean(mae_vals),
+                "ensemble/mae_std": np.std(mae_vals),
+                "ensemble/spearman_mean": np.mean(spearman_vals),
+                "ensemble/spearman_std": np.std(spearman_vals),
+                "ensemble/pearson_mean": np.mean(pearson_vals),
+                "ensemble/pearson_std": np.std(pearson_vals),
+                "ensemble/kendall_mean": np.mean(kendall_vals),
+                "ensemble/kendall_std": np.std(kendall_vals),
+            }
+
+            # Create a table with all member metrics
+            member_table_data = [
+                [i, m["mse"], m["mae"], m["spearman_corr"], m["pearson_r"], m["kendall_tau"]]
+                for i, m in enumerate(all_metrics)
+            ]
+            member_table = wandb.Table(
+                data=member_table_data,
+                columns=["member_id", "mse", "mae", "spearman", "pearson", "kendall"],
             )
+            log_dict["ensemble/member_metrics"] = member_table
+
+            # Bar chart for correlation metrics across members
+            corr_chart_data = []
+            for i in range(args.ensemble_size):
+                corr_chart_data.append([f"Member {i}", "Spearman", spearman_vals[i]])
+                corr_chart_data.append([f"Member {i}", "Pearson", pearson_vals[i]])
+                corr_chart_data.append([f"Member {i}", "Kendall", kendall_vals[i]])
+            corr_table = wandb.Table(
+                data=corr_chart_data,
+                columns=["member", "metric", "value"],
+            )
+            log_dict["ensemble/correlation_by_member"] = wandb.plot.bar(
+                corr_table,
+                "member",
+                "value",
+                title="Correlation Metrics by Member",
+            )
+
+            # Bar chart for error metrics across members
+            error_chart_data = []
+            for i in range(args.ensemble_size):
+                error_chart_data.append([f"Member {i}", "MSE", mse_vals[i]])
+                error_chart_data.append([f"Member {i}", "MAE", mae_vals[i]])
+            error_table = wandb.Table(
+                data=error_chart_data,
+                columns=["member", "metric", "value"],
+            )
+            log_dict["ensemble/error_by_member"] = wandb.plot.bar(
+                error_table,
+                "member",
+                "value",
+                title="Error Metrics by Member",
+            )
+
+            # Summary bar chart showing mean metrics with labels
+            summary_data = [
+                ["Spearman (mean)", np.mean(spearman_vals)],
+                ["Pearson (mean)", np.mean(pearson_vals)],
+                ["Kendall (mean)", np.mean(kendall_vals)],
+            ]
+            summary_table = wandb.Table(data=summary_data, columns=["metric", "value"])
+            log_dict["ensemble/mean_correlations"] = wandb.plot.bar(
+                summary_table,
+                "metric",
+                "value",
+                title="Ensemble Mean Correlations",
+            )
+
+            wandb.log(log_dict)
             wandb.save(str(ensemble_paths["manifest"]))
             wandb.finish()
     else:

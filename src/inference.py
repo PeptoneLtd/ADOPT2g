@@ -310,42 +310,57 @@ class EnsembleDisorderPredictor:
 
         return results
 
-    def _predict_short_sequences(self, sequences: list[str]) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    def _predict_short_sequences(
+        self, sequences: list[str]
+    ) -> tuple[list[np.ndarray], list[np.ndarray], list[list[np.ndarray]]]:
         """
         Predict scores for sequences within max length.
 
-        Returns (mean_scores, std_scores) per sequence.
+        Returns:
+            mean_scores: List of mean predictions per sequence
+            std_scores: List of std predictions per sequence
+            all_member_scores: List of [member_0_scores, member_1_scores, ...] per sequence
         """
         # Compute ESM embeddings once (shared)
         esm_embeddings = self._get_esm_embeddings(sequences)
 
-        # Get predictions from each member
-        all_member_scores = []
+        # Get predictions from each member: all_member_scores[member_idx][seq_idx] = scores
+        all_member_scores_by_member = []
         for member_idx in range(self.ensemble_size):
             member_scores = self._predict_member_scores(member_idx, esm_embeddings, sequences)
-            all_member_scores.append(member_scores)
+            all_member_scores_by_member.append(member_scores)
 
-        # Aggregate: compute mean and std across members
+        # Reorganize to per-sequence and aggregate
         mean_scores = []
         std_scores = []
+        all_member_scores = []  # per-sequence: list of member score arrays
 
         for seq_idx in range(len(sequences)):
-            # Stack member predictions for this sequence: (n_members, seq_len)
-            stacked = np.stack([all_member_scores[m][seq_idx] for m in range(self.ensemble_size)])
+            # Collect member predictions for this sequence
+            seq_member_scores = [all_member_scores_by_member[m][seq_idx] for m in range(self.ensemble_size)]
+            all_member_scores.append(seq_member_scores)
+
+            # Stack and compute stats: (n_members, seq_len)
+            stacked = np.stack(seq_member_scores)
             mean_scores.append(np.mean(stacked, axis=0))
             std_scores.append(np.std(stacked, axis=0))
 
-        return mean_scores, std_scores
+        return mean_scores, std_scores, all_member_scores
 
-    def _predict_long_sequence(self, sequence: str) -> tuple[np.ndarray, np.ndarray]:
+    def _predict_long_sequence(self, sequence: str) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
         """
         Predict scores for a long sequence using overlapping chunks.
 
         Each member handles chunks independently, then we aggregate across members.
+
+        Returns:
+            mean_scores: Mean prediction per residue
+            std_scores: Std prediction per residue
+            member_scores: List of per-member full-sequence predictions
         """
         if len(sequence) <= self._max_seq_len:
-            means, stds = self._predict_short_sequences([sequence])
-            return means[0], stds[0]
+            means, stds, all_member = self._predict_short_sequences([sequence])
+            return means[0], stds[0], all_member[0]
 
         min_overlap = self._max_seq_len // 2
         num_chunks = int(np.ceil((len(sequence) - min_overlap) / (self._max_seq_len - min_overlap)))
@@ -363,7 +378,7 @@ class EnsembleDisorderPredictor:
         esm_embeddings = self._get_esm_embeddings(chunks)
 
         # Get predictions from each member for all chunks
-        all_member_preds = []  # List of (member, seq_len) arrays
+        all_member_preds = []  # List of full-sequence arrays per member
 
         for member_idx in range(self.ensemble_size):
             # Predict each chunk with this member
@@ -386,7 +401,7 @@ class EnsembleDisorderPredictor:
         mean_scores = np.mean(stacked, axis=0)
         std_scores = np.std(stacked, axis=0)
 
-        return mean_scores, std_scores
+        return mean_scores, std_scores, all_member_preds
 
     def predict(self, sequences: list[str]) -> list[EnsemblePrediction]:
         """
@@ -419,6 +434,7 @@ class EnsembleDisorderPredictor:
         # Separate short and long sequences
         mean_results: list[np.ndarray | None] = [None] * len(sequences)
         std_results: list[np.ndarray | None] = [None] * len(sequences)
+        member_scores_results: list[list[np.ndarray] | None] = [None] * len(sequences)
         short_indices = []
         short_seqs = []
 
@@ -427,30 +443,33 @@ class EnsembleDisorderPredictor:
                 short_indices.append(i)
                 short_seqs.append(seq)
             else:
-                mean_results[i], std_results[i] = self._predict_long_sequence(seq)
+                mean_results[i], std_results[i], member_scores_results[i] = self._predict_long_sequence(seq)
 
         # Batch predict short sequences
         if short_seqs:
-            short_means, short_stds = self._predict_short_sequences(short_seqs)
+            short_means, short_stds, short_member_scores = self._predict_short_sequences(short_seqs)
             for i, idx in enumerate(short_indices):
                 mean_results[idx] = short_means[i]
                 std_results[idx] = short_stds[i]
+                member_scores_results[idx] = short_member_scores[i]
 
-        # Apply NaN mask for non-standard amino acids
-        for i, mask in enumerate(non_std_masks):
-            if len(mask) > 0:
-                mean_results[i][mask] = np.nan
-                std_results[i][mask] = np.nan
-
-        # Compute mean_gscore_std: std across members of each member's mean_gscore
-        # We need to recompute per-member mean_gscore
+        # Apply NaN mask and compute final predictions
         ensemble_predictions = []
-        for i, seq in enumerate(cleaned_sequences):
+        for i in range(len(sequences)):
+            mask = non_std_masks[i]
             mean_scores = mean_results[i]
             std_scores = std_results[i]
+            member_scores = member_scores_results[i]
 
-            # Get per-member mean_gscore for this sequence
-            member_mean_gscores = self._get_member_mean_gscores(seq, non_std_masks[i])
+            # Apply NaN mask
+            if len(mask) > 0:
+                mean_scores[mask] = np.nan
+                std_scores[mask] = np.nan
+                for m_scores in member_scores:
+                    m_scores[mask] = np.nan
+
+            # Compute uncertainty metrics from already-computed member scores
+            member_mean_gscores = [float(np.nanmean(m_scores)) for m_scores in member_scores]
             mean_gscore_std = float(np.std(member_mean_gscores))
 
             ensemble_predictions.append(
@@ -463,54 +482,6 @@ class EnsembleDisorderPredictor:
             )
 
         return ensemble_predictions
-
-    def _get_member_mean_gscores(self, sequence: str, non_std_mask: np.ndarray) -> list[float]:
-        """Compute mean_gscore for each member for a single sequence."""
-        # For short sequences, we can reuse predictions
-        # For simplicity, we'll recompute - this is called per-sequence anyway
-        if len(sequence) <= self._max_seq_len:
-            esm_embeddings = self._get_esm_embeddings([sequence])
-            member_means = []
-            for member_idx in range(self.ensemble_size):
-                scores = self._predict_member_scores(member_idx, esm_embeddings, [sequence])[0]
-                if len(non_std_mask) > 0:
-                    scores[non_std_mask] = np.nan
-                member_means.append(float(np.nanmean(scores)))
-            return member_means
-        else:
-            # For long sequences, use chunk-based prediction per member
-            min_overlap = self._max_seq_len // 2
-            num_chunks = int(np.ceil((len(sequence) - min_overlap) / (self._max_seq_len - min_overlap)))
-            num_chunks = max(2, num_chunks)
-            overlap = int(np.floor((self._max_seq_len * num_chunks - len(sequence)) / (num_chunks - 1)))
-
-            chunks = []
-            for i in range(num_chunks):
-                start = i * (self._max_seq_len - overlap)
-                end = min(len(sequence), start + self._max_seq_len)
-                chunks.append(sequence[start:end])
-
-            esm_embeddings = self._get_esm_embeddings(chunks)
-
-            member_means = []
-            for member_idx in range(self.ensemble_size):
-                chunk_scores = self._predict_member_scores(member_idx, esm_embeddings, chunks)
-
-                preds = np.zeros(len(sequence), dtype=float)
-                counts = np.zeros(len(sequence), dtype=int)
-
-                for i, scores in enumerate(chunk_scores):
-                    start = i * (self._max_seq_len - overlap)
-                    end = min(len(sequence), start + self._max_seq_len)
-                    preds[start:end] += scores
-                    counts[start:end] += 1
-
-                full_scores = preds / counts
-                if len(non_std_mask) > 0:
-                    full_scores[non_std_mask] = np.nan
-                member_means.append(float(np.nanmean(full_scores)))
-
-            return member_means
 
 
 def load_predictor(

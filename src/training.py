@@ -7,13 +7,33 @@ import numpy as np
 import scipy.stats
 import torch
 import wandb
-from sentence_transformers import SentenceTransformer, losses
+from sentence_transformers import SentenceTransformer, losses, SentenceTransformerTrainingArguments
+from sentence_transformers.training_args import BatchSamplers
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from transformers import TrainerCallback
 
 from . import config
 from .data import ResidueDataset, generate_sequence_pairs
 from .models import DisorderMLP
+
+
+class WandbSTCallback(TrainerCallback):
+    """Callback to log SentenceTransformer training metrics to W&B."""
+
+    def __init__(self, prefix: str = "st"):
+        self.prefix = prefix
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Log metrics to W&B when the trainer logs."""
+        if wandb.run is not None and logs is not None:
+            # Filter and prefix the logs
+            wandb_logs = {}
+            for key, value in logs.items():
+                if isinstance(value, (int, float)):
+                    wandb_logs[f"{self.prefix}/{key}"] = value
+            if wandb_logs:
+                wandb.log(wandb_logs, step=state.global_step)
 
 
 def set_seed(seed: int) -> None:
@@ -54,6 +74,16 @@ def train_sentence_transformer(
     train_loss = losses.CosineSimilarityLoss(model)
     warmup_steps = int(np.ceil(len(train_dataloader) * num_epochs * warmup_ratio))
 
+    # Prepare callbacks for W&B logging
+    callbacks = []
+    if wandb.run is not None:
+        callbacks.append(WandbSTCallback(prefix="st"))
+        # Log ST training config
+        wandb.config.update({
+            "st_training_pairs": len(train_examples),
+            "st_warmup_steps": warmup_steps,
+        }, allow_val_change=True)
+
     print(f"Training sentence transformer for {num_epochs} epochs (batch_size={batch_size})...")
     model.fit(
         train_objectives=[(train_dataloader, train_loss)],
@@ -61,6 +91,7 @@ def train_sentence_transformer(
         warmup_steps=warmup_steps,
         show_progress_bar=True,
         use_amp=True,  # Mixed precision for faster training
+        callback=callbacks[0] if callbacks else None,
     )
 
     if output_path is not None:
@@ -173,19 +204,49 @@ def train_mlp(
                     all_targets.extend(target.cpu().numpy())
 
             val_loss /= len(val_dataset)
-            corr = scipy.stats.spearmanr(all_targets, all_preds).correlation
+            all_preds_arr = np.array(all_preds)
+            all_targets_arr = np.array(all_targets)
+            spearman_corr = scipy.stats.spearmanr(all_targets_arr, all_preds_arr).correlation
+            pearson_corr = scipy.stats.pearsonr(all_targets_arr, all_preds_arr)[0]
+            val_mae = np.mean(np.abs(all_preds_arr - all_targets_arr))
 
-            print(f"Epoch {epoch + 1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, corr={corr:.4f}")
+            print(f"Epoch {epoch + 1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, corr={spearman_corr:.4f}")
 
             # Log to wandb
             if wandb.run is not None:
-                wandb.log({
+                log_dict = {
                     "epoch": epoch + 1,
                     "train/loss": train_loss,
                     "val/loss": val_loss,
-                    "val/spearman_corr": corr,
+                    "val/mae": val_mae,
+                    "val/spearman_corr": spearman_corr,
+                    "val/pearson_corr": pearson_corr,
                     "learning_rate": current_lr,
-                })
+                }
+
+                # Log histograms and scatter plot every 10 epochs or on last epoch
+                if (epoch + 1) % 10 == 0 or epoch == epochs - 1:
+                    # Histograms of predictions and targets
+                    log_dict["val/predictions_hist"] = wandb.Histogram(all_preds_arr)
+                    log_dict["val/targets_hist"] = wandb.Histogram(all_targets_arr)
+                    log_dict["val/residuals_hist"] = wandb.Histogram(all_preds_arr - all_targets_arr)
+
+                    # Sample points for scatter plot (max 5000 to keep it fast)
+                    n_samples = min(5000, len(all_preds_arr))
+                    sample_idx = np.random.choice(len(all_preds_arr), n_samples, replace=False)
+                    scatter_data = [[t, p] for t, p in zip(
+                        all_targets_arr[sample_idx], all_preds_arr[sample_idx]
+                    )]
+                    scatter_table = wandb.Table(
+                        data=scatter_data,
+                        columns=["target", "prediction"],
+                    )
+                    log_dict["val/pred_vs_target"] = wandb.plot.scatter(
+                        scatter_table, "target", "prediction",
+                        title=f"Validation: Prediction vs Target (Epoch {epoch + 1})",
+                    )
+
+                wandb.log(log_dict)
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss

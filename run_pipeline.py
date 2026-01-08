@@ -41,7 +41,58 @@ from src.ensemble import (
     get_ensemble_paths,
     get_member_paths,
 )
+from src.inference import load_ensemble_predictor
 from src.training import evaluate_model, set_seed, train_mlp, train_sentence_transformer
+
+
+def compute_calibration_factor(
+    manifest_path: Path,
+    df_data: pd.DataFrame,
+    esm_cache_path: Path,
+) -> float:
+    """
+    Compute calibration factor for uncertainty estimates.
+
+    The calibration factor is the standard deviation of normalized residuals:
+    calibration_factor = std((true - pred) / pred_std)
+
+    If uncertainties are well-calibrated, this should be ~1.0.
+    If uncertainties are under-estimated, this will be > 1.0.
+
+    Args:
+        manifest_path: Path to ensemble manifest
+        df_data: DataFrame with sequences and gscores to calibrate on
+        esm_cache_path: Path to cached ESM embeddings
+
+    Returns:
+        Calibration factor (float)
+    """
+    # Load ensemble predictor without calibration (factor=1.0)
+    predictor = load_ensemble_predictor(manifest_path, calibration_factor=1.0)
+
+    # Collect all residue-level predictions and targets
+    all_residuals_normalized = []
+
+    for _label, row in df_data.iterrows():
+        sequence = row["sequence"]
+        true_gscores = np.array(row["gscores"])
+
+        # Get ensemble prediction
+        pred = predictor.predict([sequence])[0]
+        pred_gscores = np.array(pred.gscores)
+        pred_std = np.array(pred.gscores_std)
+
+        # Compute normalized residuals, masking where std is 0 or NaN
+        valid_mask = (pred_std > 1e-8) & ~np.isnan(pred_std) & ~np.isnan(true_gscores)
+        if valid_mask.sum() > 0:
+            residuals = (true_gscores[valid_mask] - pred_gscores[valid_mask]) / pred_std[valid_mask]
+            all_residuals_normalized.extend(residuals)
+
+    # Calibration factor is the std of normalized residuals
+    all_residuals_normalized = np.array(all_residuals_normalized)
+    calibration_factor = float(np.std(all_residuals_normalized))
+
+    return calibration_factor
 
 
 def train_single_member(
@@ -296,6 +347,11 @@ def main() -> None:
     parser.add_argument("--overwrite-esm", action="store_true", help="Re-extract ESM embeddings")
     parser.add_argument("--epochs", type=int, default=config.MLP_EPOCHS, help="MLP epochs")
     parser.add_argument("--no-wandb", action="store_true", help="Disable W&B logging")
+    parser.add_argument(
+        "--skip-calibration",
+        action="store_true",
+        help="Skip uncertainty calibration factor computation (saves time)",
+    )
 
     args = parser.parse_args()
 
@@ -423,6 +479,25 @@ def main() -> None:
         print(f"  MSE: mean={np.mean(mse_vals):.4f}, std={np.std(mse_vals):.4f}")
         print(f"  Spearman: mean={np.mean(corr_vals):.4f}, std={np.std(corr_vals):.4f}")
 
+        # Compute calibration factor on training data
+        if args.skip_calibration:
+            calibration_factor = 1.0
+            print("\nSkipping calibration factor computation (--skip-calibration)")
+            print(f"  Using default calibration factor: {calibration_factor:.4f}")
+        else:
+            print("\nComputing uncertainty calibration factor on training data...")
+            calibration_factor = compute_calibration_factor(
+                manifest_path=ensemble_paths["manifest"],
+                df_data=df_train_pool,
+                esm_cache_path=esm_cache_path,
+            )
+            print(f"  Calibration factor: {calibration_factor:.4f}")
+
+            # Update manifest with calibration factor
+            manifest.calibration_factor = calibration_factor
+            manifest.save(ensemble_paths["manifest"])
+            print("  Manifest updated with calibration factor")
+
         # Log ensemble summary to W&B
         if not args.no_wandb:
             wandb.init(
@@ -457,6 +532,8 @@ def main() -> None:
                 "ensemble/pearson_std": np.std(pearson_vals),
                 "ensemble/kendall_mean": np.mean(kendall_vals),
                 "ensemble/kendall_std": np.std(kendall_vals),
+                # Calibration
+                "ensemble/calibration_factor": calibration_factor,
             }
 
             # Create a table with all member metrics

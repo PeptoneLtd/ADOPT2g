@@ -228,12 +228,14 @@ class EnsembleDisorderPredictor:
         st_models: list[SentenceTransformer],
         mlps: list[DisorderMLP],
         device: str | None = None,
+        calibration_factor: float = 1.0,
     ):
         self.tokenizer = esm_tokenizer
         self.esm_model = esm_model
         self.st_models = st_models
         self.mlps = mlps
         self.ensemble_size = len(st_models)
+        self.calibration_factor = calibration_factor
 
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -472,12 +474,16 @@ class EnsembleDisorderPredictor:
             member_mean_gscores = [float(np.nanmean(m_scores)) for m_scores in member_scores]
             mean_gscore_std = float(np.std(member_mean_gscores))
 
+            # Apply calibration factor to uncertainty estimates
+            calibrated_std_scores = std_scores * self.calibration_factor
+            calibrated_mean_gscore_std = mean_gscore_std * self.calibration_factor
+
             ensemble_predictions.append(
                 EnsemblePrediction(
                     gscores=mean_scores.tolist(),
-                    gscores_std=std_scores.tolist(),
+                    gscores_std=calibrated_std_scores.tolist(),
                     mean_gscore=float(np.nanmean(mean_scores)),
-                    mean_gscore_std=mean_gscore_std,
+                    mean_gscore_std=calibrated_mean_gscore_std,
                 )
             )
 
@@ -531,6 +537,7 @@ def load_ensemble_predictor(
     ensemble_id_or_manifest: str | Path,
     esm_model_name: str = config.ESM_MODEL_NAME,
     device: str | None = None,
+    calibration_factor: float | None = None,
 ) -> EnsembleDisorderPredictor:
     """
     Load an ensemble predictor from manifest.
@@ -540,6 +547,8 @@ def load_ensemble_predictor(
             or a path to manifest.json
         esm_model_name: Name of ESM model on HuggingFace
         device: Device to use (defaults to CUDA if available)
+        calibration_factor: Override the calibration factor from manifest.
+            If None, uses the value from manifest. Set to 1.0 to disable calibration.
 
     Returns:
         Ready-to-use EnsembleDisorderPredictor
@@ -562,6 +571,11 @@ def load_ensemble_predictor(
     manifest = EnsembleManifest.load(manifest_path)
     print(f"  Ensemble ID: {manifest.ensemble_id}")
     print(f"  Ensemble size: {manifest.ensemble_size}")
+
+    # Determine calibration factor
+    if calibration_factor is None:
+        calibration_factor = manifest.calibration_factor
+    print(f"  Calibration factor: {calibration_factor:.4f}")
 
     # Load shared ESM model
     print(f"  Loading ESM model to {device}...")
@@ -594,4 +608,5 @@ def load_ensemble_predictor(
         st_models=st_models,
         mlps=mlps,
         device=device,
+        calibration_factor=calibration_factor,
     )

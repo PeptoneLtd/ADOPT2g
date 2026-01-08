@@ -29,15 +29,15 @@ from src.ensemble import find_latest_ensemble
 from src.inference import load_ensemble_predictor, load_predictor
 
 
-def estimate_max_residues_per_batch() -> int:
+def estimate_max_residues_per_batch(usage_fraction: float = 0.75) -> int:
     """Estimate max residues per GPU batch based on available memory."""
     if torch.cuda.is_available():
         free_mem_gb = torch.cuda.mem_get_info()[0] / 1e9
-        # Reserve ~3GB for models, use ~70% of remaining for safety
-        usable_gb = max(0.5, (free_mem_gb - 3.0) * 0.7)
+        # Reserve ~3GB for models, use ~usage_fraction of remaining for safety
+        usable_gb = max(0.5, (free_mem_gb - 3.0) * usage_fraction)
         # Empirical: ~5MB per residue for ESM2-650M fp16 forward pass
         return int(usable_gb * 1e9 / 5_000_000)
-    return 10_000 # default for CPU
+    return 10_000  # default for CPU
 
 
 def main() -> None:
@@ -88,6 +88,11 @@ Examples:
 
     # Processing options
     parser.add_argument("--chunk-size", type=int, default=1000, help="Sequences per chunk")
+    parser.add_argument(
+        "--no-calibration",
+        action="store_true",
+        help="Disable uncertainty calibration (use raw ensemble std)",
+    )
 
     args = parser.parse_args()
 
@@ -109,8 +114,12 @@ Examples:
                 return
             manifest_path = latest
 
-        predictor = load_ensemble_predictor(manifest_path)
+        # Load predictor with or without calibration
+        calibration_factor = 1.0 if args.no_calibration else None
+        predictor = load_ensemble_predictor(manifest_path, calibration_factor=calibration_factor)
         print("Running in ensemble mode (predictions include uncertainty)")
+        if args.no_calibration:
+            print("  Uncertainty calibration disabled (using raw ensemble std)")
     else:
         # Legacy single-model mode
         st_path = config.DATA_PATH / "st" / str(args.seed)
@@ -208,8 +217,8 @@ Examples:
     print(f"Results saved to {args.output}")
     if use_ensemble:
         print("Columns: label, sequence, mean_gscore, mean_gscore_std, gscores, gscores_std")
-        print("  - mean_gscore_std: std across ensemble members of per-member mean_gscore")
-        print("  - gscores_std: per-residue std across ensemble members (JSON array)")
+        print("  - mean_gscore_std: calibrated std across ensemble members of per-member mean_gscore")
+        print("  - gscores_std: calibrated per-residue std across ensemble members (JSON array)")
     else:
         print("Columns: label, sequence, mean_gscore, gscores")
     print("(Use json.loads() to parse JSON array columns)")

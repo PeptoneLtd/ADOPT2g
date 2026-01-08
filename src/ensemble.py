@@ -35,6 +35,7 @@ class EnsembleManifest:
     members: list[MemberConfig] = field(default_factory=list)
     config_snapshot: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    calibration_factor: float = 1.0
 
     def to_dict(self) -> dict:
         """Convert manifest to dictionary."""

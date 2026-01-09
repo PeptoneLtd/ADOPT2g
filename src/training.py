@@ -15,7 +15,7 @@ import wandb
 
 from . import config
 from .data import ResidueDataset, generate_sequence_pairs
-from .models import DisorderMLP
+from .mlp import DisorderMLP
 
 
 class WandbSTCallback(TrainerCallback):

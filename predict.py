@@ -22,7 +22,8 @@ import torch
 from tqdm import tqdm
 
 from src.data import FastaIterator
-from src.models import find_latest_ensemble, load_ensemble_predictor
+from src.ensemble import find_latest_ensemble
+from src.inference import load_ensemble_predictor
 
 
 def estimate_max_residues_per_batch(usage_fraction: float = 0.75) -> int:

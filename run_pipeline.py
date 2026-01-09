@@ -32,7 +32,7 @@ from src.data import (
     split_train_val,
 )
 from src.embeddings import extract_esm_embeddings, load_esm_model, prepare_residue_embeddings
-from src.models import (
+from src.ensemble import (
     EnsembleManifest,
     MemberConfig,
     create_config_snapshot,
@@ -40,8 +40,8 @@ from src.models import (
     generate_ensemble_id,
     get_ensemble_dir,
     get_member_dir,
-    load_ensemble_predictor,
 )
+from src.inference import load_ensemble_predictor
 from src.training import evaluate_model, set_seed, train_mlp, train_sentence_transformer
 
 

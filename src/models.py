@@ -1,10 +1,11 @@
 """Models, ensemble management, and inference for disorder prediction."""
 
 import json
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import numpy as np
 import torch
@@ -33,7 +34,7 @@ class DisorderMLP(nn.Module):
     def __init__(
         self,
         input_dim: int = config.TOTAL_EMBED_DIM,
-        hidden_dims: list[int] = None,
+        hidden_dims: list[int] | None = None,
         dropout: float = config.MLP_DROPOUT,
     ):
         super().__init__()
@@ -50,7 +51,7 @@ class DisorderMLP(nn.Module):
                     nn.Linear(prev_dim, hidden_dim),
                     nn.ReLU(),
                     nn.Dropout(dropout),
-                ]
+                ],
             )
             prev_dim = hidden_dim
 
@@ -59,7 +60,7 @@ class DisorderMLP(nn.Module):
             [
                 nn.Linear(prev_dim, 1),
                 nn.Sigmoid(),
-            ]
+            ],
         )
 
         self.net = nn.Sequential(*layers)
@@ -319,7 +320,7 @@ class EnsembleDisorderPredictor:
         return results
 
     def _predict_short_sequences(
-        self, sequences: list[str]
+        self, sequences: list[str],
     ) -> tuple[list[np.ndarray], list[np.ndarray], list[list[np.ndarray]]]:
         """
         Predict scores for sequences within max length.
@@ -492,7 +493,7 @@ class EnsembleDisorderPredictor:
                     mean_gscore=float(np.nanmean(mean_scores)),
                     mean_gscore_std=calibrated_mean_gscore_std,
                     member_gscores=[m.tolist() for m in member_scores] if include_member_gscores else None,
-                )
+                ),
             )
 
         return ensemble_predictions
@@ -529,7 +530,7 @@ def load_ensemble_predictor(
 
     if not manifest_path.exists():
         raise FileNotFoundError(
-            f"Ensemble manifest not found: {manifest_path}. Train an ensemble first with run_pipeline.py"
+            f"Ensemble manifest not found: {manifest_path}. Train an ensemble first with run_pipeline.py",
         )
 
     print(f"Loading ensemble from {manifest_path}...")

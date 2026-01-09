@@ -1,9 +1,8 @@
 """Data loading and dataset utilities for disorder prediction."""
 
 import json
-import random
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import numpy as np
 import pandas as pd

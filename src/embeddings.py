@@ -60,7 +60,7 @@ def extract_esm_embeddings(
 
         # Tokenize and run model
         inputs = tokenizer(
-            batch_sequences, return_tensors="pt", padding=True, truncation=True, max_length=config.MAX_SEQUENCE_LEN + 2
+            batch_sequences, return_tensors="pt", padding=True, truncation=True, max_length=config.MAX_SEQUENCE_LEN + 2,
         )
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
@@ -168,7 +168,7 @@ def prepare_residue_embeddings(
         esm_path = esm_cache_dir / f"{label}.pt"
         if not esm_path.exists():
             raise FileNotFoundError(
-                f"ESM embedding for {label} not found at {esm_path}. Run embedding extraction first."
+                f"ESM embedding for {label} not found at {esm_path}. Run embedding extraction first.",
             )
 
         esm_emb = load_esm_embedding(esm_path).numpy()

@@ -197,7 +197,7 @@ def train_single_member(
                 "train_sequences": len(df_train_member),
                 "val_sequences": len(df_val_member),
                 "test_sequences": len(df_test),
-            }
+            },
         )
 
     # Step 3: Prepare embeddings
@@ -220,7 +220,7 @@ def train_single_member(
                 "train_residues": len(y_train),
                 "val_residues": len(y_val),
                 "test_residues": len(y_test),
-            }
+            },
         )
 
     # Step 4: Compute rebalancing weights

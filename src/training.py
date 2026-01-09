@@ -6,12 +6,12 @@ from pathlib import Path
 import numpy as np
 import scipy.stats
 import torch
-import wandb
-from sentence_transformers import SentenceTransformer, losses, SentenceTransformerTrainingArguments
-from sentence_transformers.training_args import BatchSamplers
+from sentence_transformers import SentenceTransformer, losses
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import TrainerCallback
+
+import wandb
 
 from . import config
 from .data import ResidueDataset, generate_sequence_pairs
@@ -79,10 +79,13 @@ def train_sentence_transformer(
     if wandb.run is not None:
         callbacks.append(WandbSTCallback(prefix="st"))
         # Log ST training config
-        wandb.config.update({
-            "st_training_pairs": len(train_examples),
-            "st_warmup_steps": warmup_steps,
-        }, allow_val_change=True)
+        wandb.config.update(
+            {
+                "st_training_pairs": len(train_examples),
+                "st_warmup_steps": warmup_steps,
+            },
+            allow_val_change=True,
+        )
 
     print(f"Training sentence transformer for {num_epochs} epochs (batch_size={batch_size})...")
     model.fit(
@@ -108,7 +111,7 @@ def train_mlp(
     train_weights: np.ndarray | None = None,
     val_embeddings: np.ndarray | None = None,
     val_targets: np.ndarray | None = None,
-    hidden_dims: list[int] = None,
+    hidden_dims: list[int] | None = None,
     dropout: float = config.MLP_DROPOUT,
     lr: float = config.MLP_LR,
     weight_decay: float = config.MLP_WEIGHT_DECAY,
@@ -131,20 +134,25 @@ def train_mlp(
     # Create datasets
     # Note: num_workers=0 avoids fork issues with memory-mapped arrays
     # For regular arrays, num_workers=4 would be faster
-    is_memmap = hasattr(train_embeddings, 'flush')  # memmaps have flush method
+    is_memmap = hasattr(train_embeddings, "flush")  # memmaps have flush method
     num_workers = 0 if is_memmap else 4
-    
+
     train_dataset = ResidueDataset(train_embeddings, train_targets, train_weights)
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, pin_memory=(device == "cuda" and num_workers > 0),
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=(device == "cuda" and num_workers > 0),
     )
 
     if val_embeddings is not None and val_targets is not None:
         val_dataset = ResidueDataset(val_embeddings, val_targets)
         val_loader = DataLoader(
-            val_dataset, batch_size=batch_size,
-            num_workers=num_workers, pin_memory=(device == "cuda" and num_workers > 0),
+            val_dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            pin_memory=(device == "cuda" and num_workers > 0),
         )
     else:
         val_loader = None
@@ -169,7 +177,9 @@ def train_mlp(
         train_loss = 0.0
 
         for batch_emb, batch_target, batch_weight in tqdm(
-            train_loader, desc=f"Epoch {epoch + 1}/{epochs}", leave=False
+            train_loader,
+            desc=f"Epoch {epoch + 1}/{epochs}",
+            leave=False,
         ):
             emb, target, weight = batch_emb.to(device), batch_target.to(device), batch_weight.to(device)
 
@@ -234,15 +244,21 @@ def train_mlp(
                     # Sample points for scatter plot (max 5000 to keep it fast)
                     n_samples = min(5000, len(all_preds_arr))
                     sample_idx = np.random.choice(len(all_preds_arr), n_samples, replace=False)
-                    scatter_data = [[t, p] for t, p in zip(
-                        all_targets_arr[sample_idx], all_preds_arr[sample_idx]
-                    )]
+                    scatter_data = [
+                        [t, p]
+                        for t, p in zip(
+                            all_targets_arr[sample_idx],
+                            all_preds_arr[sample_idx],
+                        )
+                    ]
                     scatter_table = wandb.Table(
                         data=scatter_data,
                         columns=["target", "prediction"],
                     )
                     log_dict["val/pred_vs_target"] = wandb.plot.scatter(
-                        scatter_table, "target", "prediction",
+                        scatter_table,
+                        "target",
+                        "prediction",
                         title=f"Validation: Prediction vs Target (Epoch {epoch + 1})",
                     )
 
@@ -256,11 +272,13 @@ def train_mlp(
 
             # Log to wandb (training only)
             if wandb.run is not None:
-                wandb.log({
-                    "epoch": epoch + 1,
-                    "train/loss": train_loss,
-                    "learning_rate": current_lr,
-                })
+                wandb.log(
+                    {
+                        "epoch": epoch + 1,
+                        "train/loss": train_loss,
+                        "learning_rate": current_lr,
+                    },
+                )
 
     # Restore best model if validation was used
     if best_state is not None:
@@ -289,7 +307,7 @@ def evaluate_model(
     model = model.to(device)
 
     # Use single worker for memmap compatibility
-    is_memmap = hasattr(embeddings, 'flush')
+    is_memmap = hasattr(embeddings, "flush")
     dataset = ResidueDataset(embeddings, targets)
     loader = DataLoader(dataset, batch_size=config.MLP_BATCH_SIZE, num_workers=0 if is_memmap else 4)
 

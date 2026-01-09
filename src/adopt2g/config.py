@@ -3,7 +3,7 @@
 from pathlib import Path
 
 # Paths
-ROOT_PATH = Path(__file__).resolve().parent.parent
+ROOT_PATH = Path(__file__).resolve().parent.parent.parent
 CACHE_PATH = ROOT_PATH / "cache"
 DATASETS_PATH = ROOT_PATH / "datasets"
 MODELS_PATH = ROOT_PATH / "models"
@@ -52,6 +52,6 @@ WANDB_PROJECT = "adopt2g"
 WANDB_ENTITY = None
 
 # Ensemble configuration
-DEFAULT_ENSEMBLE_SIZE = 5
+DEFAULT_ENSEMBLE_SIZE = 7
 DEFAULT_MLP_VAL_FRAC = 0.1
 DEFAULT_ST_TRAIN_FRAC = 0.9

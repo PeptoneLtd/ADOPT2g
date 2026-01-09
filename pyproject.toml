@@ -1,5 +1,8 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = [
+    "setuptools>=61.0",
+    "wheel",
+]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,45 +10,61 @@ name = "adopt2g"
 version = "0.1.0"
 description = "ADOPT 2g: Disorder predictor based on ESM embeddings and TriZOD G-scores"
 readme = "README.md"
-license = {text = "MIT"}
-requires-python = ">=3.9"
+license = { text = "MIT" }
+requires-python = ">=3.10"
 authors = [
-    {name = "Michele Invernizzi"}
+    { name = "Michele Invernizzi", email = "michele@peptone.io" },
 ]
 
 dependencies = [
-    "torch>=2.0.0",
-    "numpy>=1.24.0",
-    "pandas>=2.0.0",
-    "scipy>=1.10.0",
-    "tqdm>=4.65.0",
-    "transformers>=4.30.0",
-    "sentence-transformers>=2.2.0",
-    "wandb>=0.15.0",
+    "torch",
+    "numpy",
+    "pandas",
+    "scipy",
+    "tqdm",
+    "transformers",
+    "sentence-transformers",
 ]
 
 [project.optional-dependencies]
+train = [
+    "wandb",
+]
 dev = [
-    "black>=23.0.0",
-    "ruff>=0.1.0",
-    "ipykernel>=6.0.0",
-    "jupyter>=1.0.0",
+    "jupyterlab",
+    "matplotlib",
+    "ipykernel",
+    "black",
+    "ruff",
+]
+attn = [
+    "flash-attn",
 ]
 
 [project.scripts]
-adopt2g-predict = "predict:main"
-
+adopt2g-predict = "adopt2g.scripts.predict:main"
+adopt2g-train = "adopt2g.scripts.run_pipeline:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
+where = ["src"]
+include = ["adopt2g*"]
 
 [tool.black]
 line-length = 100
-target-version = ["py39", "py310", "py311"]
+target-version = [
+    "py310",
+    "py311",
+    "py312",
+]
 
 [tool.ruff]
 line-length = 100
-select = ["E", "F", "W", "I"]
-ignore = ["E501"]
-
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+]
+ignore = [
+    "E501",
+]

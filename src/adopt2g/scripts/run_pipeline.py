@@ -22,8 +22,8 @@ import torch
 from sentence_transformers import SentenceTransformer
 
 import wandb
-from src import config
-from src.data import (
+from adopt2g import config
+from adopt2g.data import (
     compute_rebalancing_weights,
     load_st_classes,
     load_trizod_dataset,
@@ -31,8 +31,8 @@ from src.data import (
     split_train_test,
     split_train_val,
 )
-from src.embeddings import extract_esm_embeddings, load_esm_model, prepare_residue_embeddings
-from src.ensemble import (
+from adopt2g.embeddings import extract_esm_embeddings, load_esm_model, prepare_residue_embeddings
+from adopt2g.ensemble import (
     EnsembleManifest,
     MemberConfig,
     create_config_snapshot,
@@ -41,8 +41,8 @@ from src.ensemble import (
     get_ensemble_dir,
     get_member_dir,
 )
-from src.inference import load_ensemble_predictor
-from src.training import evaluate_model, set_seed, train_mlp, train_sentence_transformer
+from adopt2g.inference import load_ensemble_predictor
+from adopt2g.training import evaluate_model, set_seed, train_mlp, train_sentence_transformer
 
 
 def compute_calibration_factor(

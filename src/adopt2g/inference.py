@@ -10,6 +10,7 @@ from sentence_transformers import SentenceTransformer
 from transformers import AutoModel, AutoTokenizer
 
 from . import config
+from .embeddings import load_esm_model
 from .ensemble import EnsembleManifest
 from .mlp import DisorderMLP
 
@@ -88,12 +89,13 @@ class EnsembleDisorderPredictor:
     def _get_esm_embeddings(self, sequences: list[str]) -> list[np.ndarray]:
         """Compute ESM embeddings for a batch of sequences (shared across members)."""
         results = []
+        use_amp = self.device == "cuda"
 
         for batch in self._chunk_sequences(sequences):
             inputs = self.tokenizer(batch, return_tensors="pt", padding=True)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-            with torch.no_grad():
+            with torch.no_grad(), torch.autocast(device_type="cuda", enabled=use_amp):
                 esm_out = self.esm_model(**inputs)
 
             for i, seq in enumerate(batch):
@@ -112,6 +114,7 @@ class EnsembleDisorderPredictor:
         """Predict scores for one member given precomputed ESM embeddings."""
         st_model = self.st_models[member_idx]
         mlp = self.mlps[member_idx]
+        use_amp = self.device == "cuda"
 
         # Get ST embeddings for all sequences
         st_embs = st_model.encode(sequences)
@@ -123,9 +126,9 @@ class EnsembleDisorderPredictor:
             # Concatenate
             combined = np.concatenate([esm_emb, st_emb], axis=1).astype(np.float32)
 
-            # Run MLP
+            # Run MLP with mixed precision
             x = torch.from_numpy(combined).to(self.device)
-            with torch.no_grad():
+            with torch.no_grad(), torch.autocast(device_type="cuda", enabled=use_amp):
                 scores = mlp(x).cpu().numpy()
             results.append(scores)
 
@@ -357,10 +360,13 @@ def load_ensemble_predictor(
         calibration_factor = manifest.calibration_factor
     print(f"  Calibration factor: {calibration_factor:.4f}")
 
-    # Load shared ESM model
+    # Load shared ESM model with Flash Attention if available
     print(f"  Loading ESM model to {device}...")
-    tokenizer = AutoTokenizer.from_pretrained(esm_model_name)
-    esm_model = AutoModel.from_pretrained(esm_model_name, dtype=torch.float16)
+    tokenizer, esm_model = load_esm_model(
+        model_name=esm_model_name,
+        device=device,
+        use_flash_attention=(device == "cuda"),
+    )
 
     # Load all ST models (resolve relative paths from manifest directory)
     print(f"  Loading {manifest.ensemble_size} ST models...")

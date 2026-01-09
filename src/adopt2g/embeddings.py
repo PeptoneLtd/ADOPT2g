@@ -15,10 +15,32 @@ from . import config
 def load_esm_model(
     model_name: str = config.ESM_MODEL_NAME,
     device: str | None = None,
+    use_flash_attention: bool = True,
 ) -> tuple[AutoTokenizer, AutoModel]:
-    """Load ESM model and tokenizer."""
+    """Load ESM model and tokenizer.
+
+    Args:
+        model_name: HuggingFace model name for ESM
+        device: Device to load model on (defaults to CUDA if available)
+        use_flash_attention: Whether to use Flash Attention 2 for faster inference
+    """
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name, dtype=torch.float16)
+
+    # Try to use Flash Attention 2 for faster inference on supported GPUs
+    model_kwargs = {"dtype": torch.float16}
+    if use_flash_attention and torch.cuda.is_available():
+        try:
+            model = AutoModel.from_pretrained(
+                model_name,
+                attn_implementation="flash_attention_2",
+                **model_kwargs,
+            )
+            print("Loaded ESM model with Flash Attention 2")
+        except Exception as e:
+            print(f"Flash Attention 2 not available ({e}), falling back to sdpa attention")
+            model = AutoModel.from_pretrained(model_name, attn_implementation="sdpa", **model_kwargs)
+    else:
+        model = AutoModel.from_pretrained(model_name, **model_kwargs)
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -60,11 +82,16 @@ def extract_esm_embeddings(
 
         # Tokenize and run model
         inputs = tokenizer(
-            batch_sequences, return_tensors="pt", padding=True, truncation=True, max_length=config.MAX_SEQUENCE_LEN + 2,
+            batch_sequences,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=config.MAX_SEQUENCE_LEN + 2,
         )
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
-        with torch.no_grad():
+        use_amp = device.type == "cuda"
+        with torch.no_grad(), torch.autocast(device_type="cuda", enabled=use_amp):
             output = model(**inputs)
 
         # Save each embedding in the batch
@@ -230,7 +257,8 @@ def get_embeddings_for_sequences(
     )
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    with torch.no_grad():
+    use_amp = device.type == "cuda"
+    with torch.no_grad(), torch.autocast(device_type="cuda", enabled=use_amp):
         esm_outputs = esm_model(**inputs)
 
     # Get ST embeddings

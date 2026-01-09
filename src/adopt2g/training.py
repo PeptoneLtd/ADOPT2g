@@ -144,6 +144,7 @@ def train_mlp(
         shuffle=True,
         num_workers=num_workers,
         pin_memory=(device == "cuda" and num_workers > 0),
+        persistent_workers=(num_workers > 0),
     )
 
     if val_embeddings is not None and val_targets is not None:
@@ -153,6 +154,7 @@ def train_mlp(
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=(device == "cuda" and num_workers > 0),
+            persistent_workers=(num_workers > 0),
         )
     else:
         val_loader = None
@@ -167,6 +169,10 @@ def train_mlp(
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+    # Mixed precision training setup
+    use_amp = device == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     best_val_loss = float("inf")
     best_state = None
@@ -184,12 +190,17 @@ def train_mlp(
             emb, target, weight = batch_emb.to(device), batch_target.to(device), batch_weight.to(device)
 
             optimizer.zero_grad()
-            pred = model(emb)
 
-            # Weighted MSE loss
-            loss = (weight * (pred - target) ** 2).mean()
-            loss.backward()
-            optimizer.step()
+            # Mixed precision forward pass
+            with torch.autocast(device_type="cuda", enabled=use_amp):
+                pred = model(emb)
+                # Weighted MSE loss
+                loss = (weight * (pred - target) ** 2).mean()
+
+            # Scaled backward pass
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             train_loss += loss.item() * len(emb)
 
@@ -205,7 +216,7 @@ def train_mlp(
             val_loss = 0.0
             all_preds, all_targets = [], []
 
-            with torch.no_grad():
+            with torch.no_grad(), torch.autocast(device_type="cuda", enabled=use_amp):
                 for batch_emb, batch_target, _ in val_loader:
                     emb, target = batch_emb.to(device), batch_target.to(device)
                     pred = model(emb)
@@ -308,8 +319,15 @@ def evaluate_model(
 
     # Use single worker for memmap compatibility
     is_memmap = hasattr(embeddings, "flush")
+    num_workers = 0 if is_memmap else 4
     dataset = ResidueDataset(embeddings, targets)
-    loader = DataLoader(dataset, batch_size=config.MLP_BATCH_SIZE, num_workers=0 if is_memmap else 4)
+    loader = DataLoader(
+        dataset,
+        batch_size=config.MLP_BATCH_SIZE,
+        num_workers=num_workers,
+        pin_memory=(device == "cuda" and num_workers > 0),
+        persistent_workers=(num_workers > 0),
+    )
 
     all_preds, all_targets = [], []
 

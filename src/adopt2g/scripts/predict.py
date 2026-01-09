@@ -6,10 +6,10 @@ The ensemble provides mean predictions and per-residue uncertainty estimates.
 
 Usage:
     # Use latest trained ensemble
-    python predict.py --fasta input.fasta --output results.csv
+    adopt2g-predict --fasta input.fasta --output results.csv
 
     # Use specific ensemble
-    python predict.py --fasta input.fasta --output results.csv --ensemble-id seed883_n5
+    adopt2g-predict --fasta input.fasta --output results.csv --ensemble-id seed883_n5
 """
 
 import argparse
@@ -21,9 +21,9 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from src.data import FastaIterator
-from src.ensemble import find_latest_ensemble
-from src.inference import load_ensemble_predictor
+from adopt2g.data import FastaIterator
+from adopt2g.ensemble import find_latest_ensemble
+from adopt2g.inference import load_ensemble_predictor
 
 
 def estimate_max_residues_per_batch(usage_fraction: float = 0.75) -> int:
@@ -32,8 +32,8 @@ def estimate_max_residues_per_batch(usage_fraction: float = 0.75) -> int:
         free_mem_gb = torch.cuda.mem_get_info()[0] / 1e9
         # Reserve ~3GB for models, use ~usage_fraction of remaining for safety
         usable_gb = max(0.5, (free_mem_gb - 3.0) * usage_fraction)
-        # Empirical: ~5MB per residue for ESM2-650M fp16 forward pass
-        return int(usable_gb * 1e9 / 5_000_000)
+        # Empirical: ~5KB per residue for ESM2-650M fp16 forward pass
+        return int(usable_gb * 1e9 / 5_000)
     return 10_000  # default for CPU
 
 
@@ -44,13 +44,13 @@ def main() -> None:
         epilog="""
 Examples:
   # Use latest trained ensemble
-  python predict.py --fasta proteins.fasta --output results.csv
+  adopt2g-predict --fasta proteins.fasta --output results.csv
 
   # Use specific ensemble
-  python predict.py --fasta proteins.fasta --output results.csv --ensemble-id seed883_n5
+  adopt2g-predict --fasta proteins.fasta --output results.csv --ensemble-id seed883_n5
 
   # Save per-model gscores for each ensemble member
-  python predict.py --fasta proteins.fasta --output results.csv --save-member-gscores
+  adopt2g-predict --fasta proteins.fasta --output results.csv --save-member-gscores
 """,
     )
     parser.add_argument("--fasta", type=Path, required=True, help="Input FASTA file")
@@ -71,7 +71,7 @@ Examples:
     )
 
     # Processing options
-    parser.add_argument("--chunk-size", type=int, default=1000, help="Sequences per chunk")
+    parser.add_argument("--chunk-size", type=int, default=10_000, help="Sequences per chunk")
     parser.add_argument(
         "--no-calibration",
         action="store_true",
@@ -94,7 +94,7 @@ Examples:
         # Find latest ensemble
         latest = find_latest_ensemble()
         if latest is None:
-            print("No trained ensemble found. Train one with run_pipeline.py")
+            print("No trained ensemble found. Train one with adopt2g-train")
             return
         manifest_path = latest
 
@@ -137,9 +137,8 @@ Examples:
                 all_predictions.extend(predictor.predict(batch, include_member_gscores=args.save_member_gscores))
                 batch = []
                 batch_residues = 0
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                # Note: gc.collect() and empty_cache() removed here for performance
+                # Memory cleanup happens between chunks instead
 
             batch.append(seq)
             batch_residues += seq_len
@@ -183,8 +182,9 @@ Examples:
     if args.save_member_gscores:
         cols += ", member_gscores"
     print(f"Columns: {cols}")
-    print("  - mean_gscore_std: calibrated std across ensemble members of per-member mean_gscore")
-    print("  - gscores_std: calibrated per-residue std across ensemble members (JSON array)")
+    calibrated_str = "calibrated " if not args.no_calibration else ""
+    print(f"  - mean_gscore_std: {calibrated_str}std across ensemble members of per-member mean_gscore")
+    print(f"  - gscores_std: {calibrated_str}per-residue std across ensemble members (JSON array)")
     if args.save_member_gscores:
         print("  - member_gscores: per-residue gscores for each ensemble member (JSON 2D array)")
     print("(Use json.loads() to parse JSON array columns)")

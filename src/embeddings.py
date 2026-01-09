@@ -18,7 +18,7 @@ def load_esm_model(
 ) -> tuple[AutoTokenizer, AutoModel]:
     """Load ESM model and tokenizer."""
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name, torch_dtype=torch.float16)
+    model = AutoModel.from_pretrained(model_name, dtype=torch.float16)
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"

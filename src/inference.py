@@ -24,6 +24,7 @@ class EnsemblePrediction:
     gscores_std: list[float]  # Std across members per residue
     mean_gscore: float  # Mean of gscores (nanmean)
     mean_gscore_std: float  # Std across members of per-member mean_gscore
+    member_gscores: list[list[float]] | None = None  # Per-member gscores (optional)
 
 
 class DisorderPredictor:
@@ -405,7 +406,9 @@ class EnsembleDisorderPredictor:
 
         return mean_scores, std_scores, all_member_preds
 
-    def predict(self, sequences: list[str]) -> list[EnsemblePrediction]:
+    def predict(
+        self, sequences: list[str], include_member_gscores: bool = False
+    ) -> list[EnsemblePrediction]:
         """
         Predict disorder scores with uncertainty for a list of sequences.
 
@@ -414,6 +417,7 @@ class EnsembleDisorderPredictor:
 
         Args:
             sequences: List of amino acid sequences
+            include_member_gscores: If True, include per-member gscores in the result
 
         Returns:
             List of EnsemblePrediction objects with mean, std, and mean_gscore_std
@@ -484,6 +488,7 @@ class EnsembleDisorderPredictor:
                     gscores_std=calibrated_std_scores.tolist(),
                     mean_gscore=float(np.nanmean(mean_scores)),
                     mean_gscore_std=calibrated_mean_gscore_std,
+                    member_gscores=[m.tolist() for m in member_scores] if include_member_gscores else None,
                 )
             )
 
@@ -515,7 +520,7 @@ def load_predictor(
 
     # Load ESM
     tokenizer = AutoTokenizer.from_pretrained(esm_model_name)
-    esm_model = AutoModel.from_pretrained(esm_model_name, torch_dtype=torch.float16)
+    esm_model = AutoModel.from_pretrained(esm_model_name, dtype=torch.float16)
 
     # Load ST
     st_model = SentenceTransformer(st_model_path)
@@ -580,7 +585,7 @@ def load_ensemble_predictor(
     # Load shared ESM model
     print(f"  Loading ESM model to {device}...")
     tokenizer = AutoTokenizer.from_pretrained(esm_model_name)
-    esm_model = AutoModel.from_pretrained(esm_model_name, torch_dtype=torch.float16)
+    esm_model = AutoModel.from_pretrained(esm_model_name, dtype=torch.float16)
 
     # Load all ST models
     print(f"  Loading {manifest.ensemble_size} ST models...")

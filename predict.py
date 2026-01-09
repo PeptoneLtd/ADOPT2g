@@ -52,6 +52,9 @@ Examples:
   # Use specific ensemble
   python predict.py --fasta proteins.fasta --output results.csv --ensemble-id seed883_n5
 
+  # Save per-model gscores for each ensemble member
+  python predict.py --fasta proteins.fasta --output results.csv --save-member-gscores
+
   # Legacy single-model mode
   python predict.py --fasta proteins.fasta --output results.csv --no-ensemble --seed 883
 """,
@@ -93,6 +96,11 @@ Examples:
         action="store_true",
         help="Disable uncertainty calibration (use raw ensemble std)",
     )
+    parser.add_argument(
+        "--save-member-gscores",
+        action="store_true",
+        help="Save per-model gscores for each ensemble member (ensemble mode only)",
+    )
 
     args = parser.parse_args()
 
@@ -120,6 +128,8 @@ Examples:
         print("Running in ensemble mode (predictions include uncertainty)")
         if args.no_calibration:
             print("  Uncertainty calibration disabled (using raw ensemble std)")
+        if args.save_member_gscores:
+            print("  Saving per-member gscores")
     else:
         # Legacy single-model mode
         st_path = config.DATA_PATH / "st" / str(args.seed)
@@ -160,7 +170,10 @@ Examples:
 
             if batch and batch_residues + seq_len > max_residues:
                 # Process current batch
-                all_predictions.extend(predictor.predict(batch))
+                if use_ensemble:
+                    all_predictions.extend(predictor.predict(batch, include_member_gscores=args.save_member_gscores))
+                else:
+                    all_predictions.extend(predictor.predict(batch))
                 batch = []
                 batch_residues = 0
                 gc.collect()
@@ -172,23 +185,27 @@ Examples:
 
         # Process final batch
         if batch:
-            all_predictions.extend(predictor.predict(batch))
+            if use_ensemble:
+                all_predictions.extend(predictor.predict(batch, include_member_gscores=args.save_member_gscores))
+            else:
+                all_predictions.extend(predictor.predict(batch))
 
         # Save chunk results
         results = []
         for header, seq, pred in zip(headers, sequences, all_predictions):
             if use_ensemble:
                 # Ensemble mode: pred is EnsemblePrediction
-                results.append(
-                    {
-                        "label": header,
-                        "sequence": seq,
-                        "mean_gscore": pred.mean_gscore,
-                        "mean_gscore_std": pred.mean_gscore_std,
-                        "gscores": json.dumps(pred.gscores),
-                        "gscores_std": json.dumps(pred.gscores_std),
-                    }
-                )
+                result = {
+                    "label": header,
+                    "sequence": seq,
+                    "mean_gscore": pred.mean_gscore,
+                    "mean_gscore_std": pred.mean_gscore_std,
+                    "gscores": json.dumps(pred.gscores),
+                    "gscores_std": json.dumps(pred.gscores_std),
+                }
+                if args.save_member_gscores and pred.member_gscores is not None:
+                    result["member_gscores"] = json.dumps(pred.member_gscores)
+                results.append(result)
             else:
                 # Single mode: pred is list[float]
                 results.append(
@@ -216,9 +233,14 @@ Examples:
 
     print(f"Results saved to {args.output}")
     if use_ensemble:
-        print("Columns: label, sequence, mean_gscore, mean_gscore_std, gscores, gscores_std")
+        cols = "label, sequence, mean_gscore, mean_gscore_std, gscores, gscores_std"
+        if args.save_member_gscores:
+            cols += ", member_gscores"
+        print(f"Columns: {cols}")
         print("  - mean_gscore_std: calibrated std across ensemble members of per-member mean_gscore")
         print("  - gscores_std: calibrated per-residue std across ensemble members (JSON array)")
+        if args.save_member_gscores:
+            print("  - member_gscores: per-residue gscores for each ensemble member (JSON 2D array)")
     else:
         print("Columns: label, sequence, mean_gscore, gscores")
     print("(Use json.loads() to parse JSON array columns)")

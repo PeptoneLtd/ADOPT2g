@@ -16,9 +16,10 @@ nohup.out
 wandb/
 
 # Data and Checkpoints
-data/
+cache/
 datasets/
 checkpoints/
+models/
 *.pt
 *.csv
 

@@ -11,7 +11,7 @@ Overview of most relevant implementation details:
 - **Model architecture (ESM2 + MLP head with bounded outputs)**: We concatenate a residue-level ESM2 embedding (`facebook/esm2_t33_650M_UR50D`, 1280-d) with a sequence-level embedding from the trained SentenceTransformer base (`facebook/esm2_t6_8M_UR50D`, 320-d) and predict g-scores with an MLP head (`[512, 128]`, ReLU + dropout) ending in a **sigmoid** so outputs stay in \([0, 1]\) (`src/models.py`, `src/config.py`).
 - **Imbalance handling (TriZOD reweighting)**: MLP training uses a **weighted MSE** loss and per-sample weights computed with a saturating logistic curve \(w=\min(1, a / (1 + e^{-b(y-0.5)}))\) (defaults `a=16.229`, `b=10.670` determined in `datasets/visualize.ipynb`) to rebalance ordered vs disordered regions (`src/data.py`, `src/config.py`, `src/training.py`).
 - **Other notable training details**: SentenceTransformer training uses AMP (`use_amp=True`), and the MLP dataloaders handle both in-memory arrays and memory-mapped embeddings (switching `num_workers` accordingly) for large datasets.
-- **Ensemble predictions and uncertainty**: By default, predictions are made using an ensemble of multiple models (trained with different random seeds). The ensemble provides mean predictions and per-residue uncertainty estimates (standard deviation across ensemble members). Uncertainty estimates are calibrated on training data to better reflect prediction confidence (`run_pipeline.py`, `src/inference.py`).
+- **Ensemble predictions and uncertainty**: Predictions are made using an ensemble of multiple models (trained with different random seeds). The ensemble provides mean predictions and per-residue uncertainty estimates (standard deviation across ensemble members). Uncertainty estimates are calibrated on training data to better reflect prediction confidence (`run_pipeline.py`, `src/inference.py`).
 
 ## Training
 ```
@@ -20,7 +20,7 @@ python run_pipeline.py
 
 ## Inference
 ```
-python predict.py --fasta my.fasta --out test.csv
+python predict.py --fasta my.fasta --output results.csv
 ```
-Use `--no-calibration` to output vanilla std as uncertainties. 
-See also `data/plots.ipynb`
+Use `--no-calibration` to output raw ensemble standard deviation as uncertainty. 
+See also `notebooks/plots_train.ipynb` and `notebooks/plots_test.ipynb`.

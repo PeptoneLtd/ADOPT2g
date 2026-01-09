@@ -2,7 +2,7 @@
 """
 Full training pipeline for the disorder predictor.
 
-Supports training an ensemble of models with different seeds and train/val splits
+Trains an ensemble of models with different seeds and train/val splits
 for improved predictions with uncertainty estimates.
 
 Steps per ensemble member:
@@ -32,16 +32,16 @@ from src.data import (
     split_train_val,
 )
 from src.embeddings import extract_esm_embeddings, load_esm_model, prepare_residue_embeddings
-from src.ensemble import (
+from src.models import (
     EnsembleManifest,
     MemberConfig,
     create_config_snapshot,
     derive_member_seeds,
     generate_ensemble_id,
-    get_ensemble_paths,
-    get_member_paths,
+    get_ensemble_dir,
+    get_member_dir,
+    load_ensemble_predictor,
 )
-from src.inference import load_ensemble_predictor
 from src.training import evaluate_model, set_seed, train_mlp, train_sentence_transformer
 
 
@@ -121,7 +121,7 @@ def train_single_member(
 
     # Initialize W&B run for this member
     if not args.no_wandb:
-        run_name = f"member_{member_id}" if ensemble_id else f"seed_{seeds['seed_global']}"
+        run_name = f"member_{member_id}"
         wandb.init(
             project=config.WANDB_PROJECT,
             entity=config.WANDB_ENTITY,
@@ -357,25 +357,21 @@ def main() -> None:
 
     # Generate ensemble ID if not provided
     ensemble_id = args.ensemble_id or generate_ensemble_id(args.seed, args.ensemble_size)
-    is_ensemble = args.ensemble_size > 1
 
-    print(f"Training {'ensemble' if is_ensemble else 'single model'}: {ensemble_id}")
+    print(f"Training ensemble: {ensemble_id}")
     print(f"  Base seed: {args.seed}")
     print(f"  Ensemble size: {args.ensemble_size}")
     print(f"  MLP val fraction: {args.mlp_val_frac}")
     print(f"  ST train fraction: {args.st_train_frac}")
 
     # Setup paths
-    esm_cache_path = config.DATA_PATH / "esm2"
-    config.DATA_PATH.mkdir(parents=True, exist_ok=True)
-    config.CHECKPOINTS_PATH.mkdir(parents=True, exist_ok=True)
+    esm_cache_path = config.CACHE_PATH / "esm2"
+    config.CACHE_PATH.mkdir(parents=True, exist_ok=True)
 
-    # Get ensemble paths
-    if is_ensemble:
-        ensemble_paths = get_ensemble_paths(ensemble_id)
-        ensemble_paths["base"].mkdir(parents=True, exist_ok=True)
-        ensemble_paths["st_base"].mkdir(parents=True, exist_ok=True)
-        ensemble_paths["mlp_base"].mkdir(parents=True, exist_ok=True)
+    # Get ensemble directory
+    ensemble_dir = get_ensemble_dir(ensemble_id)
+    ensemble_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = ensemble_dir / "manifest.json"
 
     # Load datasets (shared across all members)
     print("\nLoading datasets...")
@@ -406,13 +402,12 @@ def main() -> None:
         torch.cuda.empty_cache()
 
     # Initialize manifest for ensemble
-    if is_ensemble:
-        manifest = EnsembleManifest(
-            ensemble_id=ensemble_id,
-            ensemble_size=args.ensemble_size,
-            base_seed=args.seed,
-            config_snapshot=create_config_snapshot(),
-        )
+    manifest = EnsembleManifest(
+        ensemble_id=ensemble_id,
+        ensemble_size=args.ensemble_size,
+        base_seed=args.seed,
+        config_snapshot=create_config_snapshot(),
+    )
 
     # Train each member
     all_metrics = []
@@ -422,14 +417,10 @@ def main() -> None:
         seeds = derive_member_seeds(args.seed, member_id)
 
         # Get paths for this member
-        if is_ensemble:
-            member_paths = get_member_paths(ensemble_id, member_id)
-            st_path = member_paths["st"]
-            mlp_path = member_paths["mlp"]
-        else:
-            # Legacy single-model paths
-            st_path = config.DATA_PATH / "st" / str(args.seed)
-            mlp_path = config.CHECKPOINTS_PATH / f"mlp_{args.seed}.pt"
+        member_dir = get_member_dir(ensemble_id, member_id)
+        member_dir.mkdir(parents=True, exist_ok=True)
+        st_path = member_dir / "st"
+        mlp_path = member_dir / "mlp.pt"
 
         # Train member
         metrics = train_single_member(
@@ -442,165 +433,159 @@ def main() -> None:
             st_path=st_path,
             mlp_path=mlp_path,
             args=args,
-            ensemble_id=ensemble_id if is_ensemble else None,
+            ensemble_id=ensemble_id,
         )
         all_metrics.append(metrics)
 
-        # Update manifest
-        if is_ensemble:
-            member_config = MemberConfig(
-                member_id=member_id,
-                st_train_frac=args.st_train_frac,
-                mlp_val_frac=args.mlp_val_frac,
-                st_path=str(st_path),
-                mlp_path=str(mlp_path),
-                **seeds,
-            )
-            manifest.members.append(member_config)
-            manifest.save(ensemble_paths["manifest"])
-            print(f"  Manifest updated: {ensemble_paths['manifest']}")
+        # Update manifest with relative paths (relative to ensemble directory)
+        member_config = MemberConfig(
+            member_id=member_id,
+            st_train_frac=args.st_train_frac,
+            mlp_val_frac=args.mlp_val_frac,
+            st_path=str(st_path.relative_to(ensemble_dir)),
+            mlp_path=str(mlp_path.relative_to(ensemble_dir)),
+            **seeds,
+        )
+        manifest.members.append(member_config)
+        manifest.save(manifest_path)
+        print(f"  Manifest updated: {manifest_path}")
 
     # Print ensemble summary
-    if is_ensemble:
-        print(f"\n{'=' * 60}")
-        print("Ensemble Training Complete!")
-        print(f"{'=' * 60}")
-        print(f"Ensemble ID: {ensemble_id}")
-        print(f"Manifest: {ensemble_paths['manifest']}")
-        print("\nPer-member test metrics:")
+    print(f"\n{'=' * 60}")
+    print("Ensemble Training Complete!")
+    print(f"{'=' * 60}")
+    print(f"Ensemble ID: {ensemble_id}")
+    print(f"Manifest: {manifest_path}")
+    print("\nPer-member test metrics:")
 
-        for i, m in enumerate(all_metrics):
-            print(f"  Member {i}: MSE={m['mse']:.4f}, Spearman={m['spearman_corr']:.4f}")
+    for i, m in enumerate(all_metrics):
+        print(f"  Member {i}: MSE={m['mse']:.4f}, Spearman={m['spearman_corr']:.4f}")
 
-        # Compute ensemble summary statistics
-        mse_vals = [m["mse"] for m in all_metrics]
-        corr_vals = [m["spearman_corr"] for m in all_metrics]
-        print("\nEnsemble summary:")
-        print(f"  MSE: mean={np.mean(mse_vals):.4f}, std={np.std(mse_vals):.4f}")
-        print(f"  Spearman: mean={np.mean(corr_vals):.4f}, std={np.std(corr_vals):.4f}")
+    # Compute ensemble summary statistics
+    mse_vals = [m["mse"] for m in all_metrics]
+    corr_vals = [m["spearman_corr"] for m in all_metrics]
+    print("\nEnsemble summary:")
+    print(f"  MSE: mean={np.mean(mse_vals):.4f}, std={np.std(mse_vals):.4f}")
+    print(f"  Spearman: mean={np.mean(corr_vals):.4f}, std={np.std(corr_vals):.4f}")
 
-        # Compute calibration factor on training data
-        if args.skip_calibration:
-            calibration_factor = 1.0
-            print("\nSkipping calibration factor computation (--skip-calibration)")
-            print(f"  Using default calibration factor: {calibration_factor:.4f}")
-        else:
-            print("\nComputing uncertainty calibration factor on training data...")
-            calibration_factor = compute_calibration_factor(
-                manifest_path=ensemble_paths["manifest"],
-                df_data=df_train_pool,
-                esm_cache_path=esm_cache_path,
-            )
-            print(f"  Calibration factor: {calibration_factor:.4f}")
-
-            # Update manifest with calibration factor
-            manifest.calibration_factor = calibration_factor
-            manifest.save(ensemble_paths["manifest"])
-            print("  Manifest updated with calibration factor")
-
-        # Log ensemble summary to W&B
-        if not args.no_wandb:
-            wandb.init(
-                project=config.WANDB_PROJECT,
-                entity=config.WANDB_ENTITY,
-                group=ensemble_id,
-                name="ensemble_summary",
-                reinit=True,
-                config={
-                    "ensemble_id": ensemble_id,
-                    "ensemble_size": args.ensemble_size,
-                    "base_seed": args.seed,
-                },
-            )
-
-            # Extract all metric arrays
-            mse_vals = np.array([m["mse"] for m in all_metrics])
-            mae_vals = np.array([m["mae"] for m in all_metrics])
-            spearman_vals = np.array([m["spearman_corr"] for m in all_metrics])
-            pearson_vals = np.array([m["pearson_r"] for m in all_metrics])
-            kendall_vals = np.array([m["kendall_tau"] for m in all_metrics])
-
-            log_dict = {
-                # Summary statistics
-                "ensemble/mse_mean": np.mean(mse_vals),
-                "ensemble/mse_std": np.std(mse_vals),
-                "ensemble/mae_mean": np.mean(mae_vals),
-                "ensemble/mae_std": np.std(mae_vals),
-                "ensemble/spearman_mean": np.mean(spearman_vals),
-                "ensemble/spearman_std": np.std(spearman_vals),
-                "ensemble/pearson_mean": np.mean(pearson_vals),
-                "ensemble/pearson_std": np.std(pearson_vals),
-                "ensemble/kendall_mean": np.mean(kendall_vals),
-                "ensemble/kendall_std": np.std(kendall_vals),
-                # Calibration
-                "ensemble/calibration_factor": calibration_factor,
-            }
-
-            # Create a table with all member metrics
-            member_table_data = [
-                [i, m["mse"], m["mae"], m["spearman_corr"], m["pearson_r"], m["kendall_tau"]]
-                for i, m in enumerate(all_metrics)
-            ]
-            member_table = wandb.Table(
-                data=member_table_data,
-                columns=["member_id", "mse", "mae", "spearman", "pearson", "kendall"],
-            )
-            log_dict["ensemble/member_metrics"] = member_table
-
-            # Bar chart for correlation metrics across members
-            corr_chart_data = []
-            for i in range(args.ensemble_size):
-                corr_chart_data.append([f"Member {i}", "Spearman", spearman_vals[i]])
-                corr_chart_data.append([f"Member {i}", "Pearson", pearson_vals[i]])
-                corr_chart_data.append([f"Member {i}", "Kendall", kendall_vals[i]])
-            corr_table = wandb.Table(
-                data=corr_chart_data,
-                columns=["member", "metric", "value"],
-            )
-            log_dict["ensemble/correlation_by_member"] = wandb.plot.bar(
-                corr_table,
-                "member",
-                "value",
-                title="Correlation Metrics by Member",
-            )
-
-            # Bar chart for error metrics across members
-            error_chart_data = []
-            for i in range(args.ensemble_size):
-                error_chart_data.append([f"Member {i}", "MSE", mse_vals[i]])
-                error_chart_data.append([f"Member {i}", "MAE", mae_vals[i]])
-            error_table = wandb.Table(
-                data=error_chart_data,
-                columns=["member", "metric", "value"],
-            )
-            log_dict["ensemble/error_by_member"] = wandb.plot.bar(
-                error_table,
-                "member",
-                "value",
-                title="Error Metrics by Member",
-            )
-
-            # Summary bar chart showing mean metrics with labels
-            summary_data = [
-                ["Spearman (mean)", np.mean(spearman_vals)],
-                ["Pearson (mean)", np.mean(pearson_vals)],
-                ["Kendall (mean)", np.mean(kendall_vals)],
-            ]
-            summary_table = wandb.Table(data=summary_data, columns=["metric", "value"])
-            log_dict["ensemble/mean_correlations"] = wandb.plot.bar(
-                summary_table,
-                "metric",
-                "value",
-                title="Ensemble Mean Correlations",
-            )
-
-            wandb.log(log_dict)
-            wandb.save(str(ensemble_paths["manifest"]))
-            wandb.finish()
+    # Compute calibration factor on training data
+    if args.skip_calibration:
+        calibration_factor = 1.0
+        print("\nSkipping calibration factor computation (--skip-calibration)")
+        print(f"  Using default calibration factor: {calibration_factor:.4f}")
     else:
-        print("\nTraining complete!")
-        print(f"  ST: {st_path}")
-        print(f"  MLP: {mlp_path}")
+        print("\nComputing uncertainty calibration factor on training data...")
+        calibration_factor = compute_calibration_factor(
+            manifest_path=manifest_path,
+            df_data=df_train_pool,
+            esm_cache_path=esm_cache_path,
+        )
+        print(f"  Calibration factor: {calibration_factor:.4f}")
+
+        # Update manifest with calibration factor
+        manifest.calibration_factor = calibration_factor
+        manifest.save(manifest_path)
+        print("  Manifest updated with calibration factor")
+
+    # Log ensemble summary to W&B
+    if not args.no_wandb:
+        wandb.init(
+            project=config.WANDB_PROJECT,
+            entity=config.WANDB_ENTITY,
+            group=ensemble_id,
+            name="ensemble_summary",
+            reinit=True,
+            config={
+                "ensemble_id": ensemble_id,
+                "ensemble_size": args.ensemble_size,
+                "base_seed": args.seed,
+            },
+        )
+
+        # Extract all metric arrays
+        mse_vals = np.array([m["mse"] for m in all_metrics])
+        mae_vals = np.array([m["mae"] for m in all_metrics])
+        spearman_vals = np.array([m["spearman_corr"] for m in all_metrics])
+        pearson_vals = np.array([m["pearson_r"] for m in all_metrics])
+        kendall_vals = np.array([m["kendall_tau"] for m in all_metrics])
+
+        log_dict = {
+            # Summary statistics
+            "ensemble/mse_mean": np.mean(mse_vals),
+            "ensemble/mse_std": np.std(mse_vals),
+            "ensemble/mae_mean": np.mean(mae_vals),
+            "ensemble/mae_std": np.std(mae_vals),
+            "ensemble/spearman_mean": np.mean(spearman_vals),
+            "ensemble/spearman_std": np.std(spearman_vals),
+            "ensemble/pearson_mean": np.mean(pearson_vals),
+            "ensemble/pearson_std": np.std(pearson_vals),
+            "ensemble/kendall_mean": np.mean(kendall_vals),
+            "ensemble/kendall_std": np.std(kendall_vals),
+            # Calibration
+            "ensemble/calibration_factor": calibration_factor,
+        }
+
+        # Create a table with all member metrics
+        member_table_data = [
+            [i, m["mse"], m["mae"], m["spearman_corr"], m["pearson_r"], m["kendall_tau"]]
+            for i, m in enumerate(all_metrics)
+        ]
+        member_table = wandb.Table(
+            data=member_table_data,
+            columns=["member_id", "mse", "mae", "spearman", "pearson", "kendall"],
+        )
+        log_dict["ensemble/member_metrics"] = member_table
+
+        # Bar chart for correlation metrics across members
+        corr_chart_data = []
+        for i in range(args.ensemble_size):
+            corr_chart_data.append([f"Member {i}", "Spearman", spearman_vals[i]])
+            corr_chart_data.append([f"Member {i}", "Pearson", pearson_vals[i]])
+            corr_chart_data.append([f"Member {i}", "Kendall", kendall_vals[i]])
+        corr_table = wandb.Table(
+            data=corr_chart_data,
+            columns=["member", "metric", "value"],
+        )
+        log_dict["ensemble/correlation_by_member"] = wandb.plot.bar(
+            corr_table,
+            "member",
+            "value",
+            title="Correlation Metrics by Member",
+        )
+
+        # Bar chart for error metrics across members
+        error_chart_data = []
+        for i in range(args.ensemble_size):
+            error_chart_data.append([f"Member {i}", "MSE", mse_vals[i]])
+            error_chart_data.append([f"Member {i}", "MAE", mae_vals[i]])
+        error_table = wandb.Table(
+            data=error_chart_data,
+            columns=["member", "metric", "value"],
+        )
+        log_dict["ensemble/error_by_member"] = wandb.plot.bar(
+            error_table,
+            "member",
+            "value",
+            title="Error Metrics by Member",
+        )
+
+        # Summary bar chart showing mean metrics with labels
+        summary_data = [
+            ["Spearman (mean)", np.mean(spearman_vals)],
+            ["Pearson (mean)", np.mean(pearson_vals)],
+            ["Kendall (mean)", np.mean(kendall_vals)],
+        ]
+        summary_table = wandb.Table(data=summary_data, columns=["metric", "value"])
+        log_dict["ensemble/mean_correlations"] = wandb.plot.bar(
+            summary_table,
+            "metric",
+            "value",
+            title="Ensemble Mean Correlations",
+        )
+
+        wandb.log(log_dict)
+        wandb.save(str(manifest_path))
+        wandb.finish()
 
 
 if __name__ == "__main__":

@@ -4,10 +4,9 @@ from pathlib import Path
 
 # Paths
 ROOT_PATH = Path(__file__).resolve().parent.parent
-DATA_PATH = ROOT_PATH / "data"
+CACHE_PATH = ROOT_PATH / "cache"
 DATASETS_PATH = ROOT_PATH / "datasets"
-CHECKPOINTS_PATH = DATA_PATH / "checkpoints"
-ENSEMBLES_PATH = DATA_PATH / "ensembles"
+MODELS_PATH = ROOT_PATH / "models"
 
 # ESM model for residue-level embeddings (dim 1280)
 ESM_MODEL_NAME = "facebook/esm2_t33_650M_UR50D"

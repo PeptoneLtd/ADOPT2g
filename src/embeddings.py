@@ -216,7 +216,7 @@ def get_embeddings_for_sequences(
     Returns a list of arrays, one per sequence, shape (seq_len, 1600).
 
     Note: Sequences longer than MAX_SEQUENCE_LEN will be truncated.
-    Use DisorderPredictor for proper handling of long sequences with overlap.
+    Use EnsembleDisorderPredictor for proper handling of long sequences with overlap.
     """
     device = next(esm_model.parameters()).device
 

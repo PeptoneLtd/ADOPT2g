@@ -1,5 +1,6 @@
 """Embedding extraction and caching for ESM models."""
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,8 @@ from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from . import config
+
+logger = logging.getLogger(__name__)
 
 
 def load_esm_model(
@@ -35,9 +38,9 @@ def load_esm_model(
                 attn_implementation="flash_attention_2",
                 **model_kwargs,
             )
-            print("Loaded ESM model with Flash Attention 2")
+            logger.info("Loaded ESM model with Flash Attention 2")
         except Exception as e:
-            print(f"Flash Attention 2 not available ({e}), falling back to sdpa attention")
+            logger.warning(f"Flash Attention 2 not available ({e}), falling back to sdpa attention")
             model = AutoModel.from_pretrained(model_name, attn_implementation="sdpa", **model_kwargs)
     else:
         model = AutoModel.from_pretrained(model_name, **model_kwargs)
@@ -73,7 +76,7 @@ def extract_esm_embeddings(
         indices_to_process = df.index.tolist()
 
     if not indices_to_process:
-        print("All ESM embeddings are already cached.")
+        logger.info("All ESM embeddings are already cached.")
         return
 
     for i in tqdm(range(0, len(indices_to_process), batch_size), desc="Extracting ESM embeddings"):
@@ -165,10 +168,10 @@ def prepare_residue_embeddings(
     st_repr = dict(zip(df.index, st_embeddings, strict=True))
 
     # Count total residues and pre-allocate arrays
-    print("Counting residues for pre-allocation...")
+    logger.info("Counting residues for pre-allocation...")
     total_residues = _count_valid_residues(df, drop_missing)
     embed_dim = config.TOTAL_EMBED_DIM
-    print(f"Total residues: {total_residues:,}, embedding dim: {embed_dim}")
+    logger.info(f"Total residues: {total_residues:,}, embedding dim: {embed_dim}")
 
     if use_memmap:
         # Use memory-mapped files to avoid RAM exhaustion

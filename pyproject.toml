@@ -24,6 +24,8 @@ dependencies = [
     "tqdm",
     "transformers",
     "sentence-transformers",
+    "datasets",
+    "accelerate",
 ]
 
 [project.optional-dependencies]

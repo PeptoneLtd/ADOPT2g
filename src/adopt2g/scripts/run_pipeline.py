@@ -14,6 +14,7 @@ Steps per ensemble member:
 """
 
 import argparse
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +44,9 @@ from adopt2g.ensemble import (
 )
 from adopt2g.inference import load_ensemble_predictor
 from adopt2g.training import evaluate_model, set_seed, train_mlp, train_sentence_transformer
+from adopt2g.utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 def compute_calibration_factor(
@@ -112,9 +116,9 @@ def train_single_member(
 
     Returns dict with member metrics.
     """
-    print(f"\n{'=' * 60}")
-    print(f"Training ensemble member {member_id}")
-    print(f"{'=' * 60}")
+    logger.info(f"{'=' * 60}")
+    logger.info(f"Training ensemble member {member_id}")
+    logger.info(f"{'=' * 60}")
 
     # Set global seed for this member
     set_seed(seeds["seed_global"])
@@ -160,10 +164,10 @@ def train_single_member(
 
     # Step 1: Train or load SentenceTransformer
     if st_path.exists() and not args.overwrite_st:
-        print(f"Loading existing ST model from {st_path}")
+        logger.info(f"Loading existing ST model from {st_path}")
         st_model = SentenceTransformer(str(st_path))
     else:
-        print("Training SentenceTransformer...")
+        logger.info("Training SentenceTransformer...")
         # Use member-specific seed for ST sampling
         x_train_st, y_train_st = sample_st_training_data(
             st_classes_df,
@@ -185,10 +189,10 @@ def train_single_member(
         random_state=seeds["split_seed_mlp"],
     )
 
-    print(f"Member {member_id} split:")
-    print(f"  Train: {len(df_train_member)} sequences")
-    print(f"  Val: {len(df_val_member)} sequences")
-    print(f"  Test: {len(df_test)} sequences (fixed)")
+    logger.info(f"Member {member_id} split:")
+    logger.info(f"  Train: {len(df_train_member)} sequences")
+    logger.info(f"  Val: {len(df_val_member)} sequences")
+    logger.info(f"  Test: {len(df_test)} sequences (fixed)")
 
     # Log dataset sizes
     if wandb.run is not None:
@@ -201,18 +205,18 @@ def train_single_member(
         )
 
     # Step 3: Prepare embeddings
-    print("Preparing training embeddings...")
+    logger.info("Preparing training embeddings...")
     X_train, y_train = prepare_residue_embeddings(df_train_member, esm_cache_path, st_model)
 
-    print("Preparing validation embeddings...")
+    logger.info("Preparing validation embeddings...")
     X_val, y_val = prepare_residue_embeddings(df_val_member, esm_cache_path, st_model)
 
-    print("Preparing test embeddings...")
+    logger.info("Preparing test embeddings...")
     X_test, y_test = prepare_residue_embeddings(df_test, esm_cache_path, st_model)
 
-    print(f"  Train: {len(y_train):,} residues")
-    print(f"  Val: {len(y_val):,} residues")
-    print(f"  Test: {len(y_test):,} residues")
+    logger.info(f"  Train: {len(y_train):,} residues")
+    logger.info(f"  Val: {len(y_val):,} residues")
+    logger.info(f"  Test: {len(y_test):,} residues")
 
     if wandb.run is not None:
         wandb.config.update(
@@ -224,11 +228,11 @@ def train_single_member(
         )
 
     # Step 4: Compute rebalancing weights
-    print("Computing rebalancing weights...")
+    logger.info("Computing rebalancing weights...")
     weights = compute_rebalancing_weights(y_train)
 
     # Step 5: Train MLP
-    print("Training MLP...")
+    logger.info("Training MLP...")
     set_seed(seeds["seed_mlp"])
     mlp = train_mlp(
         train_embeddings=X_train,
@@ -241,11 +245,11 @@ def train_single_member(
     )
 
     # Step 6: Evaluate on test set
-    print("\nEvaluation on test set:")
+    logger.info("Evaluation on test set:")
     metrics = evaluate_model(mlp, X_test, y_test)
-    print(f"  MSE: {metrics['mse']:.4f}")
-    print(f"  MAE: {metrics['mae']:.4f}")
-    print(f"  Spearman correlation: {metrics['spearman_corr']:.4f}")
+    logger.info(f"  MSE: {metrics['mse']:.4f}")
+    logger.info(f"  MAE: {metrics['mae']:.4f}")
+    logger.info(f"  Spearman correlation: {metrics['spearman_corr']:.4f}")
 
     # Log final metrics with rich visualizations
     if wandb.run is not None:
@@ -297,9 +301,9 @@ def train_single_member(
         wandb.save(str(mlp_path))
         wandb.finish()
 
-    print(f"\nMember {member_id} complete:")
-    print(f"  ST: {st_path}")
-    print(f"  MLP: {mlp_path}")
+    logger.info(f"Member {member_id} complete:")
+    logger.info(f"  ST: {st_path}")
+    logger.info(f"  MLP: {mlp_path}")
 
     return {
         "mse": metrics["mse"],
@@ -354,15 +358,16 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    setup_logging()
 
     # Generate ensemble ID if not provided
     ensemble_id = args.ensemble_id or generate_ensemble_id(args.seed, args.ensemble_size)
 
-    print(f"Training ensemble: {ensemble_id}")
-    print(f"  Base seed: {args.seed}")
-    print(f"  Ensemble size: {args.ensemble_size}")
-    print(f"  MLP val fraction: {args.mlp_val_frac}")
-    print(f"  ST train fraction: {args.st_train_frac}")
+    logger.info(f"Training ensemble: {ensemble_id}")
+    logger.info(f"  Base seed: {args.seed}")
+    logger.info(f"  Ensemble size: {args.ensemble_size}")
+    logger.info(f"  MLP val fraction: {args.mlp_val_frac}")
+    logger.info(f"  ST train fraction: {args.st_train_frac}")
 
     # Setup paths
     esm_cache_path = config.CACHE_PATH / "esm2"
@@ -374,13 +379,13 @@ def main() -> None:
     manifest_path = ensemble_dir / "manifest.json"
 
     # Load datasets (shared across all members)
-    print("\nLoading datasets...")
+    logger.info("Loading datasets...")
     trizod_df = load_trizod_dataset()
     st_classes_df = load_st_classes()
 
     df_train_pool, df_test = split_train_test(trizod_df)
-    print(f"Train pool: {len(df_train_pool)} sequences")
-    print(f"Test set: {len(df_test)} sequences (fixed)")
+    logger.info(f"Train pool: {len(df_train_pool)} sequences")
+    logger.info(f"Test set: {len(df_test)} sequences (fixed)")
 
     # Extract ESM embeddings once (shared cache)
     def all_embeddings_cached(df: pd.DataFrame, cache_dir: Path) -> bool:
@@ -389,12 +394,12 @@ def main() -> None:
     all_cached = all_embeddings_cached(trizod_df, esm_cache_path)
 
     if all_cached and not args.overwrite_esm:
-        print("Skipping ESM extraction (all embeddings cached)")
+        logger.info("Skipping ESM extraction (all embeddings cached)")
     else:
-        print("\nLoading ESM model...")
+        logger.info("Loading ESM model...")
         tokenizer, esm_model = load_esm_model()
 
-        print("Extracting ESM embeddings...")
+        logger.info("Extracting ESM embeddings...")
         extract_esm_embeddings(trizod_df, esm_cache_path, tokenizer, esm_model, overwrite=args.overwrite_esm)
 
         # Free GPU memory
@@ -448,44 +453,44 @@ def main() -> None:
         )
         manifest.members.append(member_config)
         manifest.save(manifest_path)
-        print(f"  Manifest updated: {manifest_path}")
+        logger.info(f"  Manifest updated: {manifest_path}")
 
     # Print ensemble summary
-    print(f"\n{'=' * 60}")
-    print("Ensemble Training Complete!")
-    print(f"{'=' * 60}")
-    print(f"Ensemble ID: {ensemble_id}")
-    print(f"Manifest: {manifest_path}")
-    print("\nPer-member test metrics:")
+    logger.info(f"{'=' * 60}")
+    logger.info("Ensemble Training Complete!")
+    logger.info(f"{'=' * 60}")
+    logger.info(f"Ensemble ID: {ensemble_id}")
+    logger.info(f"Manifest: {manifest_path}")
+    logger.info("Per-member test metrics:")
 
     for i, m in enumerate(all_metrics):
-        print(f"  Member {i}: MSE={m['mse']:.4f}, Spearman={m['spearman_corr']:.4f}")
+        logger.info(f"  Member {i}: MSE={m['mse']:.4f}, Spearman={m['spearman_corr']:.4f}")
 
     # Compute ensemble summary statistics
     mse_vals = [m["mse"] for m in all_metrics]
     corr_vals = [m["spearman_corr"] for m in all_metrics]
-    print("\nEnsemble summary:")
-    print(f"  MSE: mean={np.mean(mse_vals):.4f}, std={np.std(mse_vals):.4f}")
-    print(f"  Spearman: mean={np.mean(corr_vals):.4f}, std={np.std(corr_vals):.4f}")
+    logger.info("Ensemble summary:")
+    logger.info(f"  MSE: mean={np.mean(mse_vals):.4f}, std={np.std(mse_vals):.4f}")
+    logger.info(f"  Spearman: mean={np.mean(corr_vals):.4f}, std={np.std(corr_vals):.4f}")
 
     # Compute calibration factor on training data
     if args.skip_calibration:
         calibration_factor = 1.0
-        print("\nSkipping calibration factor computation (--skip-calibration)")
-        print(f"  Using default calibration factor: {calibration_factor:.4f}")
+        logger.info("Skipping calibration factor computation (--skip-calibration)")
+        logger.info(f"  Using default calibration factor: {calibration_factor:.4f}")
     else:
-        print("\nComputing uncertainty calibration factor on training data...")
+        logger.info("Computing uncertainty calibration factor on training data...")
         calibration_factor = compute_calibration_factor(
             manifest_path=manifest_path,
             df_data=df_train_pool,
             esm_cache_path=esm_cache_path,
         )
-        print(f"  Calibration factor: {calibration_factor:.4f}")
+        logger.info(f"  Calibration factor: {calibration_factor:.4f}")
 
         # Update manifest with calibration factor
         manifest.calibration_factor = calibration_factor
         manifest.save(manifest_path)
-        print("  Manifest updated with calibration factor")
+        logger.info("  Manifest updated with calibration factor")
 
     # Log ensemble summary to W&B
     if not args.no_wandb:

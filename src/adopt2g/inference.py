@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,8 @@ from . import config
 from .embeddings import load_esm_model
 from .ensemble import EnsembleManifest
 from .mlp import DisorderMLP
+
+logger = logging.getLogger(__name__)
 
 STANDARD_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
 
@@ -349,19 +352,19 @@ def load_ensemble_predictor(
             f"Ensemble manifest not found: {manifest_path}. Train an ensemble first with run_pipeline.py",
         )
 
-    print(f"Loading ensemble from {manifest_path}...")
+    logger.info(f"Loading ensemble from {manifest_path}...")
     manifest = EnsembleManifest.load(manifest_path)
     manifest_dir = manifest_path.parent
-    print(f"  Ensemble ID: {manifest.ensemble_id}")
-    print(f"  Ensemble size: {manifest.ensemble_size}")
+    logger.info(f"  Ensemble ID: {manifest.ensemble_id}")
+    logger.info(f"  Ensemble size: {manifest.ensemble_size}")
 
     # Determine calibration factor
     if calibration_factor is None:
         calibration_factor = manifest.calibration_factor
-    print(f"  Calibration factor: {calibration_factor:.4f}")
+    logger.info(f"  Calibration factor: {calibration_factor:.4f}")
 
     # Load shared ESM model with Flash Attention if available
-    print(f"  Loading ESM model to {device}...")
+    logger.info(f"  Loading ESM model to {device}...")
     tokenizer, esm_model = load_esm_model(
         model_name=esm_model_name,
         device=device,
@@ -369,7 +372,7 @@ def load_ensemble_predictor(
     )
 
     # Load all ST models (resolve relative paths from manifest directory)
-    print(f"  Loading {manifest.ensemble_size} ST models...")
+    logger.info(f"  Loading {manifest.ensemble_size} ST models...")
     st_models = []
     for member in manifest.members:
         st_path = manifest_dir / member.st_path
@@ -377,7 +380,7 @@ def load_ensemble_predictor(
         st_models.append(st_model)
 
     # Load all MLP heads (resolve relative paths from manifest directory)
-    print(f"  Loading {manifest.ensemble_size} MLP heads...")
+    logger.info(f"  Loading {manifest.ensemble_size} MLP heads...")
     mlps = []
     for member in manifest.members:
         mlp_path = manifest_dir / member.mlp_path

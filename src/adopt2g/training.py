@@ -1,5 +1,6 @@
 """Training functions for the disorder predictor."""
 
+import logging
 import random
 from pathlib import Path
 
@@ -16,6 +17,8 @@ import wandb
 from . import config
 from .data import ResidueDataset, generate_sequence_pairs
 from .mlp import DisorderMLP
+
+logger = logging.getLogger(__name__)
 
 
 class WandbSTCallback(TrainerCallback):
@@ -61,7 +64,7 @@ def train_sentence_transformer(
     Uses cosine similarity loss on positive/negative sequence pairs.
     """
     model = SentenceTransformer(base_model)
-    print(f"SentenceTransformer device: {model.device}")
+    logger.info(f"SentenceTransformer device: {model.device}")
 
     # Generate training pairs
     train_examples = generate_sequence_pairs(
@@ -87,7 +90,7 @@ def train_sentence_transformer(
             allow_val_change=True,
         )
 
-    print(f"Training sentence transformer for {num_epochs} epochs (batch_size={batch_size})...")
+    logger.info(f"Training sentence transformer for {num_epochs} epochs (batch_size={batch_size})...")
     model.fit(
         train_objectives=[(train_dataloader, train_loss)],
         epochs=num_epochs,
@@ -100,7 +103,7 @@ def train_sentence_transformer(
     if output_path is not None:
         output_path.mkdir(parents=True, exist_ok=True)
         model.save(str(output_path))
-        print(f"Saved sentence transformer to {output_path}")
+        logger.info(f"Saved sentence transformer to {output_path}")
 
     return model
 
@@ -165,7 +168,7 @@ def train_mlp(
         hidden_dims=hidden_dims,
         dropout=dropout,
     ).to(device)
-    print(f"MLP training on: {device}")
+    logger.info(f"MLP training on: {device}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
@@ -231,7 +234,7 @@ def train_mlp(
             pearson_corr = scipy.stats.pearsonr(all_targets_arr, all_preds_arr)[0]
             val_mae = np.mean(np.abs(all_preds_arr - all_targets_arr))
 
-            print(f"Epoch {epoch + 1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, corr={spearman_corr:.4f}")
+            logger.info(f"Epoch {epoch + 1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, corr={spearman_corr:.4f}")
 
             # Log to wandb
             if wandb.run is not None:
@@ -279,7 +282,7 @@ def train_mlp(
                 best_val_loss = val_loss
                 best_state = model.state_dict().copy()
         else:
-            print(f"Epoch {epoch + 1}: train_loss={train_loss:.4f}")
+            logger.info(f"Epoch {epoch + 1}: train_loss={train_loss:.4f}")
 
             # Log to wandb (training only)
             if wandb.run is not None:
@@ -299,7 +302,7 @@ def train_mlp(
     if output_path is not None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(model.state_dict(), output_path)
-        print(f"Saved MLP to {output_path}")
+        logger.info(f"Saved MLP to {output_path}")
 
     return model
 

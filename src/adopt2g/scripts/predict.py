@@ -15,6 +15,7 @@ Usage:
 import argparse
 import gc
 import json
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -24,6 +25,9 @@ from tqdm import tqdm
 from adopt2g.data import FastaIterator
 from adopt2g.ensemble import find_latest_ensemble
 from adopt2g.inference import load_ensemble_predictor
+from adopt2g.utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 def estimate_max_residues_per_batch(usage_fraction: float = 0.75) -> int:
@@ -84,6 +88,7 @@ Examples:
     )
 
     args = parser.parse_args()
+    setup_logging()
 
     # Determine manifest path
     if args.ensemble_manifest:
@@ -94,18 +99,18 @@ Examples:
         # Find latest ensemble
         latest = find_latest_ensemble()
         if latest is None:
-            print("No trained ensemble found. Train one with adopt2g-train")
+            logger.error("No trained ensemble found. Train one with adopt2g-train")
             return
         manifest_path = latest
 
     # Load predictor with or without calibration
     calibration_factor = 1.0 if args.no_calibration else None
     predictor = load_ensemble_predictor(manifest_path, calibration_factor=calibration_factor)
-    print("Running ensemble prediction (includes uncertainty estimates)")
+    logger.info("Running ensemble prediction (includes uncertainty estimates)")
     if args.no_calibration:
-        print("  Uncertainty calibration disabled (using raw ensemble std)")
+        logger.info("  Uncertainty calibration disabled (using raw ensemble std)")
     if args.save_member_gscores:
-        print("  Saving per-member gscores")
+        logger.info("  Saving per-member gscores")
 
     # Process FASTA in chunks
     fasta_iter = FastaIterator(args.fasta, chunk_size=args.chunk_size)
@@ -113,13 +118,13 @@ Examples:
     n_digits = len(str(n_chunks))
     max_residues = estimate_max_residues_per_batch()
 
-    print(f"Processing {n_chunks} chunks, max {max_residues:_} residues per batch")
+    logger.info(f"Processing {n_chunks} chunks, max {max_residues:_} residues per batch")
 
     for chunk_no, records in enumerate(tqdm(fasta_iter, total=n_chunks)):
         chunk_file = Path(f"{args.output}.{chunk_no:0{n_digits}d}")
 
         if chunk_file.exists():
-            print(f"Chunk {chunk_no} already exists, skipping")
+            logger.info(f"Chunk {chunk_no} already exists, skipping")
             continue
 
         headers, sequences = zip(*records)
@@ -169,7 +174,7 @@ Examples:
             torch.cuda.empty_cache()
 
     # Combine chunks
-    print("Combining chunks...")
+    logger.info("Combining chunks...")
     chunks = [pd.read_csv(Path(f"{args.output}.{i:0{n_digits}d}")) for i in range(n_chunks)]
     pd.concat(chunks, ignore_index=True).to_csv(args.output, index=False)
 
@@ -177,17 +182,17 @@ Examples:
     for i in range(n_chunks):
         Path(f"{args.output}.{i:0{n_digits}d}").unlink()
 
-    print(f"Results saved to {args.output}")
+    logger.info(f"Results saved to {args.output}")
     cols = "label, sequence, mean_gscore, mean_gscore_std, gscores, gscores_std"
     if args.save_member_gscores:
         cols += ", member_gscores"
-    print(f"Columns: {cols}")
+    logger.info(f"Columns: {cols}")
     calibrated_str = "calibrated " if not args.no_calibration else ""
-    print(f"  - mean_gscore_std: {calibrated_str}std across ensemble members of per-member mean_gscore")
-    print(f"  - gscores_std: {calibrated_str}per-residue std across ensemble members (JSON array)")
+    logger.info(f"  - mean_gscore_std: {calibrated_str}std across ensemble members of per-member mean_gscore")
+    logger.info(f"  - gscores_std: {calibrated_str}per-residue std across ensemble members (JSON array)")
     if args.save_member_gscores:
-        print("  - member_gscores: per-residue gscores for each ensemble member (JSON 2D array)")
-    print("(Use json.loads() to parse JSON array columns)")
+        logger.info("  - member_gscores: per-residue gscores for each ensemble member (JSON 2D array)")
+    logger.info("(Use json.loads() to parse JSON array columns)")
 
 
 if __name__ == "__main__":

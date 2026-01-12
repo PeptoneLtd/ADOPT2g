@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from scipy.special import expit
 from sentence_transformers import SentenceTransformer
 from transformers import AutoModel, AutoTokenizer
 
@@ -29,10 +30,12 @@ STANDARD_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
 class EnsemblePrediction:
     """Container for ensemble prediction results."""
 
-    gscores: list[float]  # Mean prediction per residue
-    gscores_std: list[float]  # Std across members per residue
+    gscores: list[float]  # Mean prediction per residue (sigmoid of mean logit)
+    gscores_lower: list[float]  # Lower bound per residue (from logit space uncertainty)
+    gscores_upper: list[float]  # Upper bound per residue (from logit space uncertainty)
     mean_gscore: float  # Mean of gscores (nanmean)
-    mean_gscore_std: float  # Std across members of per-member mean_gscore
+    mean_gscore_lower: float  # Lower bound for mean_gscore
+    mean_gscore_upper: float  # Upper bound for mean_gscore
     member_gscores: list[list[float]] | None = None  # Per-member gscores (optional)
 
 
@@ -108,13 +111,13 @@ class EnsembleDisorderPredictor:
 
         return results
 
-    def _predict_member_scores(
+    def _predict_member_logits(
         self,
         member_idx: int,
         esm_embeddings: list[np.ndarray],
         sequences: list[str],
     ) -> list[np.ndarray]:
-        """Predict scores for one member given precomputed ESM embeddings."""
+        """Predict logits for one member given precomputed ESM embeddings."""
         st_model = self.st_models[member_idx]
         mlp = self.mlps[member_idx]
         use_amp = self.device == "cuda"
@@ -129,11 +132,11 @@ class EnsembleDisorderPredictor:
             # Concatenate
             combined = np.concatenate([esm_emb, st_emb], axis=1).astype(np.float32)
 
-            # Run MLP with mixed precision
+            # Run MLP with mixed precision, get logits (before sigmoid)
             x = torch.from_numpy(combined).to(self.device)
             with torch.no_grad(), torch.autocast(device_type="cuda", enabled=use_amp):
-                scores = mlp(x).cpu().numpy()
-            results.append(scores)
+                logits = mlp.forward_logits(x).cpu().numpy()
+            results.append(logits)
 
         return results
 
@@ -142,49 +145,49 @@ class EnsembleDisorderPredictor:
         sequences: list[str],
     ) -> tuple[list[np.ndarray], list[np.ndarray], list[list[np.ndarray]]]:
         """
-        Predict scores for sequences within max length.
+        Predict logits for sequences within max length.
 
         Returns:
-            mean_scores: List of mean predictions per sequence
-            std_scores: List of std predictions per sequence
-            all_member_scores: List of [member_0_scores, member_1_scores, ...] per sequence
+            mean_logits: List of mean logits per sequence
+            std_logits: List of std logits per sequence
+            all_member_logits: List of [member_0_logits, member_1_logits, ...] per sequence
         """
         # Compute ESM embeddings once (shared)
         esm_embeddings = self._get_esm_embeddings(sequences)
 
-        # Get predictions from each member: all_member_scores[member_idx][seq_idx] = scores
-        all_member_scores_by_member = []
+        # Get predictions from each member: all_member_logits[member_idx][seq_idx] = logits
+        all_member_logits_by_member = []
         for member_idx in range(self.ensemble_size):
-            member_scores = self._predict_member_scores(member_idx, esm_embeddings, sequences)
-            all_member_scores_by_member.append(member_scores)
+            member_logits = self._predict_member_logits(member_idx, esm_embeddings, sequences)
+            all_member_logits_by_member.append(member_logits)
 
         # Reorganize to per-sequence and aggregate
-        mean_scores = []
-        std_scores = []
-        all_member_scores = []  # per-sequence: list of member score arrays
+        mean_logits = []
+        std_logits = []
+        all_member_logits = []  # per-sequence: list of member logit arrays
 
         for seq_idx in range(len(sequences)):
             # Collect member predictions for this sequence
-            seq_member_scores = [all_member_scores_by_member[m][seq_idx] for m in range(self.ensemble_size)]
-            all_member_scores.append(seq_member_scores)
+            seq_member_logits = [all_member_logits_by_member[m][seq_idx] for m in range(self.ensemble_size)]
+            all_member_logits.append(seq_member_logits)
 
-            # Stack and compute stats: (n_members, seq_len)
-            stacked = np.stack(seq_member_scores)
-            mean_scores.append(np.mean(stacked, axis=0))
-            std_scores.append(np.std(stacked, axis=0))
+            # Stack and compute stats in logit space: (n_members, seq_len)
+            stacked = np.stack(seq_member_logits)
+            mean_logits.append(np.mean(stacked, axis=0))
+            std_logits.append(np.std(stacked, axis=0))
 
-        return mean_scores, std_scores, all_member_scores
+        return mean_logits, std_logits, all_member_logits
 
     def _predict_long_sequence(self, sequence: str) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
         """
-        Predict scores for a long sequence using overlapping chunks.
+        Predict logits for a long sequence using overlapping chunks.
 
         Each member handles chunks independently, then we aggregate across members.
 
         Returns:
-            mean_scores: Mean prediction per residue
-            std_scores: Std prediction per residue
-            member_scores: List of per-member full-sequence predictions
+            mean_logits: Mean logits per residue
+            std_logits: Std logits per residue
+            member_logits: List of per-member full-sequence logits
         """
         if len(sequence) <= self._max_seq_len:
             means, stds, all_member = self._predict_short_sequences([sequence])
@@ -205,35 +208,39 @@ class EnsembleDisorderPredictor:
         # Get ESM embeddings for chunks (shared)
         esm_embeddings = self._get_esm_embeddings(chunks)
 
-        # Get predictions from each member for all chunks
-        all_member_preds = []  # List of full-sequence arrays per member
+        # Get logits from each member for all chunks
+        all_member_logits = []  # List of full-sequence arrays per member
 
         for member_idx in range(self.ensemble_size):
             # Predict each chunk with this member
-            chunk_scores = self._predict_member_scores(member_idx, esm_embeddings, chunks)
+            chunk_logits = self._predict_member_logits(member_idx, esm_embeddings, chunks)
 
-            # Combine chunks into full sequence prediction for this member
-            preds = np.zeros(len(sequence), dtype=float)
+            # Combine chunks into full sequence logits for this member
+            logits = np.zeros(len(sequence), dtype=float)
             counts = np.zeros(len(sequence), dtype=int)
 
-            for i, scores in enumerate(chunk_scores):
+            for i, chunk_log in enumerate(chunk_logits):
                 start = i * (self._max_seq_len - overlap)
                 end = min(len(sequence), start + self._max_seq_len)
-                preds[start:end] += scores
+                logits[start:end] += chunk_log
                 counts[start:end] += 1
 
-            all_member_preds.append(preds / counts)
+            all_member_logits.append(logits / counts)
 
-        # Aggregate across members
-        stacked = np.stack(all_member_preds)  # (n_members, seq_len)
-        mean_scores = np.mean(stacked, axis=0)
-        std_scores = np.std(stacked, axis=0)
+        # Aggregate across members in logit space
+        stacked = np.stack(all_member_logits)  # (n_members, seq_len)
+        mean_logits = np.mean(stacked, axis=0)
+        std_logits = np.std(stacked, axis=0)
 
-        return mean_scores, std_scores, all_member_preds
+        return mean_logits, std_logits, all_member_logits
 
     def predict(self, sequences: list[str], include_member_gscores: bool = False) -> list[EnsemblePrediction]:
         """
         Predict disorder scores with uncertainty for a list of sequences.
+
+        Predictions are computed in logit space (before sigmoid), where mean and std
+        are calculated. Calibration is applied in logit space, then sigmoid is applied
+        to get final scores and asymmetric confidence bounds.
 
         Non-standard amino acids are replaced with 'X' for prediction,
         and their scores are set to NaN.
@@ -243,7 +250,7 @@ class EnsembleDisorderPredictor:
             include_member_gscores: If True, include per-member gscores in the result
 
         Returns:
-            List of EnsemblePrediction objects with mean, std, and mean_gscore_std
+            List of EnsemblePrediction objects with mean, lower/upper bounds
         """
         # Handle non-standard amino acids
         cleaned_sequences = []
@@ -261,9 +268,9 @@ class EnsembleDisorderPredictor:
                 cleaned_sequences.append(seq)
 
         # Separate short and long sequences
-        mean_results: list[np.ndarray | None] = [None] * len(sequences)
-        std_results: list[np.ndarray | None] = [None] * len(sequences)
-        member_scores_results: list[list[np.ndarray] | None] = [None] * len(sequences)
+        mean_logit_results: list[np.ndarray | None] = [None] * len(sequences)
+        std_logit_results: list[np.ndarray | None] = [None] * len(sequences)
+        member_logits_results: list[list[np.ndarray] | None] = [None] * len(sequences)
         short_indices = []
         short_seqs = []
 
@@ -272,46 +279,64 @@ class EnsembleDisorderPredictor:
                 short_indices.append(i)
                 short_seqs.append(seq)
             else:
-                mean_results[i], std_results[i], member_scores_results[i] = self._predict_long_sequence(seq)
+                mean_logit_results[i], std_logit_results[i], member_logits_results[i] = self._predict_long_sequence(seq)
 
         # Batch predict short sequences
         if short_seqs:
-            short_means, short_stds, short_member_scores = self._predict_short_sequences(short_seqs)
+            short_means, short_stds, short_member_logits = self._predict_short_sequences(short_seqs)
             for i, idx in enumerate(short_indices):
-                mean_results[idx] = short_means[i]
-                std_results[idx] = short_stds[i]
-                member_scores_results[idx] = short_member_scores[i]
+                mean_logit_results[idx] = short_means[i]
+                std_logit_results[idx] = short_stds[i]
+                member_logits_results[idx] = short_member_logits[i]
 
         # Apply NaN mask and compute final predictions
         ensemble_predictions = []
         for i in range(len(sequences)):
             mask = non_std_masks[i]
-            mean_scores = mean_results[i]
-            std_scores = std_results[i]
-            member_scores = member_scores_results[i]
+            mean_logits = mean_logit_results[i]
+            std_logits = std_logit_results[i]
+            member_logits = member_logits_results[i]
 
-            # Apply NaN mask
+            # Apply NaN mask in logit space
             if len(mask) > 0:
-                mean_scores[mask] = np.nan
-                std_scores[mask] = np.nan
-                for m_scores in member_scores:
-                    m_scores[mask] = np.nan
+                mean_logits[mask] = np.nan
+                std_logits[mask] = np.nan
+                for m_logits in member_logits:
+                    m_logits[mask] = np.nan
 
-            # Compute uncertainty metrics from already-computed member scores
-            member_mean_gscores = [float(np.nanmean(m_scores)) for m_scores in member_scores]
-            mean_gscore_std = float(np.std(member_mean_gscores))
+            # Apply calibration factor in logit space
+            calibrated_std_logits = std_logits * self.calibration_factor
 
-            # Apply calibration factor to uncertainty estimates
-            calibrated_std_scores = std_scores * self.calibration_factor
-            calibrated_mean_gscore_std = mean_gscore_std * self.calibration_factor
+            # Compute per-residue gscores and bounds via sigmoid
+            gscores = expit(mean_logits)
+            gscores_lower = expit(mean_logits - calibrated_std_logits)
+            gscores_upper = expit(mean_logits + calibrated_std_logits)
+
+            # Compute sequence-level mean_gscore and bounds
+            # Each member's mean logit (across residues), then aggregate
+            member_mean_logits = np.array([float(np.nanmean(m_logits)) for m_logits in member_logits])
+            mean_of_mean_logits = np.mean(member_mean_logits)
+            std_of_mean_logits = np.std(member_mean_logits)
+            calibrated_std_of_mean_logits = std_of_mean_logits * self.calibration_factor
+
+            mean_gscore = float(expit(np.array([mean_of_mean_logits]))[0])
+            mean_gscore_lower = float(expit(np.array([mean_of_mean_logits - calibrated_std_of_mean_logits]))[0])
+            mean_gscore_upper = float(expit(np.array([mean_of_mean_logits + calibrated_std_of_mean_logits]))[0])
+
+            # Convert member logits to gscores if requested
+            member_gscores = None
+            if include_member_gscores:
+                member_gscores = [expit(m_logits).tolist() for m_logits in member_logits]
 
             ensemble_predictions.append(
                 EnsemblePrediction(
-                    gscores=mean_scores.tolist(),
-                    gscores_std=calibrated_std_scores.tolist(),
-                    mean_gscore=float(np.nanmean(mean_scores)),
-                    mean_gscore_std=calibrated_mean_gscore_std,
-                    member_gscores=[m.tolist() for m in member_scores] if include_member_gscores else None,
+                    gscores=gscores.tolist(),
+                    gscores_lower=gscores_lower.tolist(),
+                    gscores_upper=gscores_upper.tolist(),
+                    mean_gscore=mean_gscore,
+                    mean_gscore_lower=mean_gscore_lower,
+                    mean_gscore_upper=mean_gscore_upper,
+                    member_gscores=member_gscores,
                 ),
             )
 

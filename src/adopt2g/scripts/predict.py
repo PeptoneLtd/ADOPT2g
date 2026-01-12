@@ -184,9 +184,11 @@ Examples:
                 "label": header,
                 "sequence": seq,
                 "mean_gscore": pred.mean_gscore,
-                "mean_gscore_std": pred.mean_gscore_std,
+                "mean_gscore_lower": pred.mean_gscore_lower,
+                "mean_gscore_upper": pred.mean_gscore_upper,
                 "gscores": json.dumps(pred.gscores),
-                "gscores_std": json.dumps(pred.gscores_std),
+                "gscores_lower": json.dumps(pred.gscores_lower),
+                "gscores_upper": json.dumps(pred.gscores_upper),
             }
             if args.save_member_gscores and pred.member_gscores is not None:
                 result["member_gscores"] = json.dumps(pred.member_gscores)
@@ -207,13 +209,13 @@ Examples:
         Path(f"{args.output}.{i:0{n_digits}d}").unlink()
 
     logger.info(f"Results saved to {args.output}")
-    cols = "label, sequence, mean_gscore, mean_gscore_std, gscores, gscores_std"
+    cols = "label, sequence, mean_gscore, mean_gscore_lower, mean_gscore_upper, gscores, gscores_lower, gscores_upper"
     if args.save_member_gscores:
         cols += ", member_gscores"
     logger.info(f"Columns: {cols}")
     calibrated_str = "calibrated " if not args.no_calibration else ""
-    logger.info(f"  - mean_gscore_std: {calibrated_str}std across ensemble members of per-member mean_gscore")
-    logger.info(f"  - gscores_std: {calibrated_str}per-residue std across ensemble members (JSON array)")
+    logger.info(f"  - mean_gscore_lower/upper: {calibrated_str}confidence bounds for mean_gscore (asymmetric)")
+    logger.info(f"  - gscores_lower/upper: {calibrated_str}per-residue confidence bounds (JSON arrays, asymmetric)")
     if args.save_member_gscores:
         logger.info("  - member_gscores: per-residue gscores for each ensemble member (JSON 2D array)")
     logger.info("(Use json.loads() to parse JSON array columns)")

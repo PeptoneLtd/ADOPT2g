@@ -38,24 +38,32 @@ class DisorderMLP(nn.Module):
             )
             prev_dim = hidden_dim
 
-        # Output layer with sigmoid for g-score [0, 1]
-        layers.extend(
-            [
-                nn.Linear(prev_dim, 1),
-                nn.Sigmoid(),
-            ],
-        )
+        # Output linear layer (logits)
+        layers.append(nn.Linear(prev_dim, 1))
 
         self.net = nn.Sequential(*layers)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass.
+        Forward pass returning g-scores.
 
         Args:
             x: Embeddings of shape (batch_size, input_dim)
 
         Returns:
             G-scores of shape (batch_size,), values in [0, 1]
+        """
+        return self.sigmoid(self.net(x)).squeeze(-1)
+
+    def forward_logits(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass returning raw logits (before sigmoid).
+
+        Args:
+            x: Embeddings of shape (batch_size, input_dim)
+
+        Returns:
+            Logits of shape (batch_size,)
         """
         return self.net(x).squeeze(-1)

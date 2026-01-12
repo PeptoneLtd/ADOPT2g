@@ -274,7 +274,7 @@ def train_single_member(
         # Sample points for scatter plot (max 10000 to keep dashboard responsive)
         n_samples = min(10000, len(preds))
         sample_idx = np.random.choice(len(preds), n_samples, replace=False)
-        scatter_data = [[t, p] for t, p in zip(targets[sample_idx], preds[sample_idx])]
+        scatter_data = [[t, p] for t, p in zip(targets[sample_idx], preds[sample_idx], strict=True)]
         scatter_table = wandb.Table(data=scatter_data, columns=["target", "prediction"])
         log_dict["test/pred_vs_target"] = wandb.plot.scatter(
             scatter_table,
@@ -354,7 +354,7 @@ def main() -> None:
     parser.add_argument(
         "--skip-calibration",
         action="store_true",
-        help="Skip uncertainty calibration factor computation (saves time)",
+        help="Skip uncertainty calibration factor computation",
     )
 
     args = parser.parse_args()

@@ -1,8 +1,8 @@
 """Ensemble inference and prediction for disorder prediction."""
 
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
-import logging
 from pathlib import Path
 
 import numpy as np
@@ -361,7 +361,10 @@ def load_ensemble_predictor(
     # Determine calibration factor
     if calibration_factor is None:
         calibration_factor = manifest.calibration_factor
-    logger.info(f"  Calibration factor: {calibration_factor:.4f}")
+        logger.info(f"  Calibration factor: {calibration_factor:.4f}")
+    else:
+        logger.info(f"  Calibration factor from manifest:  {manifest.calibration_factor:.4f}")
+        logger.info(f"  Using provided calibration factor: {calibration_factor:.4f}")
 
     # Load shared ESM model with Flash Attention if available
     logger.info(f"  Loading ESM model to {device}...")

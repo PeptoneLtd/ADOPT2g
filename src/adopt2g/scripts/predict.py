@@ -178,7 +178,7 @@ Examples:
 
         # Save chunk results
         results = []
-        for header, seq, pred in zip(headers, sequences, all_predictions):
+        for header, seq, pred in zip(headers, sequences, all_predictions, strict=True):
             # pred is EnsemblePrediction
             result = {
                 "label": header,

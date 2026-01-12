@@ -234,7 +234,9 @@ def train_mlp(
             pearson_corr = scipy.stats.pearsonr(all_targets_arr, all_preds_arr)[0]
             val_mae = np.mean(np.abs(all_preds_arr - all_targets_arr))
 
-            logger.info(f"Epoch {epoch + 1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, corr={spearman_corr:.4f}")
+            logger.info(
+                f"Epoch {epoch + 1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, corr={spearman_corr:.4f}"
+            )
 
             # Log to wandb
             if wandb.run is not None:
@@ -263,6 +265,7 @@ def train_mlp(
                         for t, p in zip(
                             all_targets_arr[sample_idx],
                             all_preds_arr[sample_idx],
+                            strict=True,
                         )
                     ]
                     scatter_table = wandb.Table(

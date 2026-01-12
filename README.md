@@ -57,13 +57,13 @@ python src/adopt2g/scripts/run_pipeline.py
 ## Inference
 
 ```bash
-adopt2g-predict --fasta my.fasta --output results.csv
+adopt2g-predict --input my.fasta --output results.csv
 ```
 
 Or run the script directly:
 
 ```bash
-python src/adopt2g/scripts/predict.py --fasta my.fasta --output results.csv
+python src/adopt2g/scripts/predict.py --input my.fasta --output results.csv
 ```
 
 Use `--no-calibration` to output raw ensemble standard deviation as uncertainty.

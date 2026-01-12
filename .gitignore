@@ -22,6 +22,7 @@ checkpoints/
 models/
 *.pt
 *.csv
+*.fasta
 
 .vscode/
 *.egg-info/

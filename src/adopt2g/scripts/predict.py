@@ -6,10 +6,10 @@ The ensemble provides mean predictions and per-residue uncertainty estimates.
 
 Usage:
     # Use latest trained ensemble
-    adopt2g-predict --fasta input.fasta --output results.csv
+    adopt2g-predict --input input.fasta --output results.csv
 
     # Use specific ensemble
-    adopt2g-predict --fasta input.fasta --output results.csv --ensemble-id seed883_n5
+    adopt2g-predict --input input.fasta --output results.csv --ensemble-id seed883_n5
 """
 
 import argparse
@@ -22,7 +22,7 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from adopt2g.data import FastaIterator
+from adopt2g.data import CsvIterator, FastaIterator
 from adopt2g.ensemble import find_latest_ensemble
 from adopt2g.inference import load_ensemble_predictor
 from adopt2g.utils import setup_logging
@@ -48,17 +48,23 @@ def main() -> None:
         epilog="""
 Examples:
   # Use latest trained ensemble
-  adopt2g-predict --fasta proteins.fasta --output results.csv
+  adopt2g-predict --input proteins.fasta --output results.csv
 
   # Use specific ensemble
-  adopt2g-predict --fasta proteins.fasta --output results.csv --ensemble-id seed883_n5
+  adopt2g-predict --input proteins.fasta --output results.csv --ensemble-id seed883_n5
 
   # Save per-model gscores for each ensemble member
-  adopt2g-predict --fasta proteins.fasta --output results.csv --save-member-gscores
+  adopt2g-predict --input proteins.fasta --output results.csv --save-member-gscores
 """,
     )
-    parser.add_argument("--fasta", type=Path, required=True, help="Input FASTA file")
+    parser.add_argument("--input", type=Path, required=True, help="Input FASTA or CSV file")
     parser.add_argument("--output", type=Path, required=True, help="Output CSV file")
+    parser.add_argument(
+        "--csv-cols",
+        type=str,
+        default="label,sequence",
+        help="Column names for label and sequence in CSV input (default: 'label,sequence')",
+    )
 
     # Ensemble options
     parser.add_argument(
@@ -112,15 +118,33 @@ Examples:
     if args.save_member_gscores:
         logger.info("  Saving per-member gscores")
 
-    # Process FASTA in chunks
-    fasta_iter = FastaIterator(args.fasta, chunk_size=args.chunk_size)
-    n_chunks = len(fasta_iter)
+    # Load input data in chunks
+    seq_iter: CsvIterator | FastaIterator
+    if args.input.suffix.lower() == ".csv":
+        try:
+            label_col, seq_col = args.csv_cols.split(",")
+            seq_iter = CsvIterator(
+                args.input,
+                chunk_size=args.chunk_size,
+                label_col=label_col,
+                sequence_col=seq_col,
+            )
+            logger.info(f"Loading input from CSV: {args.input} (cols: {label_col}, {seq_col})")
+        except Exception as e:
+            logger.warning(f"Failed to load as CSV, falling back to FASTA: {e}")
+            seq_iter = FastaIterator(args.input, chunk_size=args.chunk_size)
+            logger.info(f"Loading input from FASTA: {args.input}")
+    else:
+        seq_iter = FastaIterator(args.input, chunk_size=args.chunk_size)
+        logger.info(f"Loading input from FASTA: {args.input}")
+
+    n_chunks = len(seq_iter)
     n_digits = len(str(n_chunks))
     max_residues = estimate_max_residues_per_batch()
 
     logger.info(f"Processing {n_chunks} chunks, max {max_residues:_} residues per batch")
 
-    for chunk_no, records in enumerate(tqdm(fasta_iter, total=n_chunks)):
+    for chunk_no, records in enumerate(tqdm(seq_iter, total=n_chunks)):
         chunk_file = Path(f"{args.output}.{chunk_no:0{n_digits}d}")
 
         if chunk_file.exists():

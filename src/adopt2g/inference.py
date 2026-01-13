@@ -1,5 +1,6 @@
 """Ensemble inference and prediction for disorder prediction."""
 
+import gc
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -7,8 +8,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from scipy.special import expit
+from scipy.special import expit, logit
 from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from . import config
@@ -19,6 +21,25 @@ from .mlp import DisorderMLP
 logger = logging.getLogger(__name__)
 
 STANDARD_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
+
+
+def estimate_max_residues_per_batch(usage_fraction: float = 0.75) -> int:
+    """
+    Estimate max residues per GPU batch based on available memory.
+
+    Args:
+        usage_fraction: Fraction of available GPU memory to use (default: 0.75)
+
+    Returns:
+        Estimated maximum number of residues that can fit in a batch
+    """
+    if torch.cuda.is_available():
+        free_mem_gb = torch.cuda.mem_get_info()[0] / 1e9
+        # Reserve ~3GB for models, use ~usage_fraction of remaining for safety
+        usable_gb = max(0.5, (free_mem_gb - 3.0) * usage_fraction)
+        # Empirical: ~5KB per residue for ESM2-650M fp16 forward pass
+        return int(usable_gb * 1e9 / 5_000)
+    return 10_000  # default for CPU
 
 
 # =============================================================================
@@ -55,7 +76,7 @@ class EnsembleDisorderPredictor:
         mlps: list[DisorderMLP],
         device: str | None = None,
         calibration_factor: float = 1.0,
-    ):
+    ) -> None:
         self.tokenizer = esm_tokenizer
         self.esm_model = esm_model
         self.st_models = st_models
@@ -126,7 +147,7 @@ class EnsembleDisorderPredictor:
         st_embs = st_model.encode(sequences)
 
         results = []
-        for i, (esm_emb, seq) in enumerate(zip(esm_embeddings, sequences)):
+        for i, (esm_emb, seq) in enumerate(zip(esm_embeddings, sequences, strict=True)):
             # Tile ST embedding for all residues
             st_emb = np.tile(st_embs[i], (len(seq), 1))
             # Concatenate
@@ -234,9 +255,15 @@ class EnsembleDisorderPredictor:
 
         return mean_logits, std_logits, all_member_logits
 
-    def predict(self, sequences: list[str], include_member_gscores: bool = False) -> list[EnsemblePrediction]:
+    def _predict_sequences(
+        self,
+        sequences: list[str],
+        include_member_gscores: bool = False,
+    ) -> list[EnsemblePrediction]:
         """
-        Predict disorder scores with uncertainty for a list of sequences.
+        Internal method to predict disorder scores for a list of sequences.
+
+        Does not perform memory-aware batching. Use `predict()` for the public API.
 
         Predictions are computed in logit space (before sigmoid), where mean and std
         are calculated. Calibration is applied in logit space, then sigmoid is applied
@@ -244,13 +271,6 @@ class EnsembleDisorderPredictor:
 
         Non-standard amino acids are replaced with 'X' for prediction,
         and their scores are set to NaN.
-
-        Args:
-            sequences: List of amino acid sequences
-            include_member_gscores: If True, include per-member gscores in the result
-
-        Returns:
-            List of EnsemblePrediction objects with mean, lower/upper bounds
         """
         # Handle non-standard amino acids
         cleaned_sequences = []
@@ -341,6 +361,132 @@ class EnsembleDisorderPredictor:
             )
 
         return ensemble_predictions
+
+    def predict(
+        self,
+        sequences: list[str],
+        include_member_gscores: bool = False,
+        max_residues_per_batch: int | None = None,
+        show_progress: bool = False,
+    ) -> list[EnsemblePrediction]:
+        """
+        Predict disorder scores with uncertainty for a list of sequences.
+
+        Automatically batches sequences to fit in GPU memory.
+
+        Predictions are computed in logit space (before sigmoid), where mean and std
+        are calculated. Calibration is applied in logit space, then sigmoid is applied
+        to get final scores and asymmetric confidence bounds.
+
+        Non-standard amino acids are replaced with 'X' for prediction,
+        and their scores are set to NaN.
+
+        Args:
+            sequences: List of amino acid sequences
+            include_member_gscores: If True, include per-member gscores in the result
+            max_residues_per_batch: Maximum residues per batch (auto-detected if None)
+            show_progress: Whether to show progress bar
+
+        Returns:
+            List of EnsemblePrediction objects with mean, lower/upper bounds
+        """
+        if max_residues_per_batch is None:
+            max_residues_per_batch = estimate_max_residues_per_batch()
+
+        all_predictions: list[EnsemblePrediction] = []
+        batch: list[str] = []
+        batch_residues = 0
+
+        if isinstance(sequences, str):
+            sequences = [sequences]
+        seq_iter = tqdm(sequences, desc="Predicting", disable=not show_progress)
+
+        for seq in seq_iter:
+            seq_len = len(seq)
+
+            if batch and batch_residues + seq_len > max_residues_per_batch:
+                # Process current batch
+                all_predictions.extend(self._predict_sequences(batch, include_member_gscores=include_member_gscores))
+                batch = []
+                batch_residues = 0
+
+            batch.append(seq)
+            batch_residues += seq_len
+
+        # Process final batch
+        if batch:
+            all_predictions.extend(self._predict_sequences(batch, include_member_gscores=include_member_gscores))
+
+        # Cleanup
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        return all_predictions
+
+    def compute_calibration_factor(
+        self,
+        sequences: list[str],
+        gscores: list[np.ndarray],
+        show_progress: bool = True,
+    ) -> float:
+        """
+        Compute calibration factor for uncertainty estimates in logit space.
+
+        The calibration factor is the standard deviation of normalized residuals
+        computed in logit space:
+        calibration_factor = std((logit(true) - mean_logit) / std_logit)
+
+        If uncertainties are well-calibrated, this should be ~1.0.
+        If uncertainties are under-estimated, this will be > 1.0.
+
+        Args:
+            sequences: List of amino acid sequences
+            gscores: List of numpy arrays with ground truth g-scores per residue
+            show_progress: Whether to show progress bar
+
+        Returns:
+            Calibration factor (float)
+        """
+        assert len(sequences) == len(gscores), f"Got {len(sequences)} sequences but {len(gscores)} gscores"
+
+        # Ensure calibration_factor is 1.0 for standard calibration calculation
+        old_factor = self.calibration_factor
+        if old_factor != 1.0:
+            logger.warning(
+                f"Computing calibration factor while current factor is {old_factor:.4f}. "
+                "Temporarily setting calibration_factor to 1.0 for calculation.",
+            )
+            self.calibration_factor = 1.0
+
+        try:
+            # Get predictions using current calibration settings
+            predictions = self.predict(sequences, show_progress=show_progress)
+
+            # Collect all residue-level normalized residuals in logit space
+            all_residuals_normalized = []
+            for true_gscore, pred in zip(gscores, predictions, strict=True):
+                true_logit = logit(true_gscore)
+
+                # Get mean logit and std logit from the predictions
+                # Since calibration=1.0: gscores = sigmoid(mean_logit)
+                #                        gscores_lower = sigmoid(mean_logit - std_logit)
+                mean_logit = logit(pred.gscores)
+                std_logit = mean_logit - logit(pred.gscores_lower)
+
+                # Compute normalized residuals in logit space
+                valid_mask = np.isfinite(true_logit) & (std_logit > 1e-8) & np.isfinite(std_logit)
+                if valid_mask.sum() > 0:
+                    residuals = (true_logit[valid_mask] - mean_logit[valid_mask]) / std_logit[valid_mask]
+                    all_residuals_normalized.extend(residuals)
+
+            # Calibration factor is the std of normalized residuals
+            calibration_factor = float(np.std(all_residuals_normalized))
+        finally:
+            if old_factor != 1.0:
+                self.calibration_factor = old_factor
+
+        return calibration_factor
 
 
 def load_ensemble_predictor(

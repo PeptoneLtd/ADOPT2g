@@ -2,12 +2,11 @@
 
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from . import config
-
 
 # =============================================================================
 # Ensemble Manifest and Configuration
@@ -39,7 +38,7 @@ class EnsembleManifest:
     base_seed: int
     members: list[MemberConfig] = field(default_factory=list)
     config_snapshot: dict[str, Any] = field(default_factory=dict)
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     calibration_factor: float = 1.0
 
     def to_dict(self) -> dict:

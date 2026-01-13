@@ -20,7 +20,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from scipy.special import logit
 from sentence_transformers import SentenceTransformer
 
 import wandb
@@ -48,68 +47,6 @@ from adopt2g.training import evaluate_model, set_seed, train_mlp, train_sentence
 from adopt2g.utils import setup_logging
 
 logger = logging.getLogger(__name__)
-
-
-def compute_calibration_factor(
-    manifest_path: Path,
-    df_data: pd.DataFrame,
-) -> float:
-    """
-    Compute calibration factor for uncertainty estimates in logit space.
-
-    The calibration factor is the standard deviation of normalized residuals
-    computed in logit space:
-    calibration_factor = std((logit(true) - mean_logit) / std_logit)
-
-    If uncertainties are well-calibrated, this should be ~1.0.
-    If uncertainties are under-estimated, this will be > 1.0.
-
-    Args:
-        manifest_path: Path to ensemble manifest
-        df_data: DataFrame with sequences and gscores to calibrate on
-
-    Returns:
-        Calibration factor (float)
-    """
-    # Load ensemble predictor without calibration (factor=1.0)
-    # This returns predictions where gscores_lower/upper are computed with factor=1.0
-    predictor = load_ensemble_predictor(manifest_path, calibration_factor=1.0)
-
-    # Collect all residue-level normalized residuals in logit space
-    all_residuals_normalized = []
-
-    for _label, row in df_data.iterrows():
-        sequence = row["sequence"]
-        true_gscores = np.array(row["gscores"])
-
-        # Get ensemble prediction (with calibration=1.0)
-        pred = predictor.predict([sequence])[0]
-
-        # Get mean logit and std logit from the predictions
-        # Since calibration=1.0: gscores = sigmoid(mean_logit)
-        #                        gscores_lower = sigmoid(mean_logit - std_logit)
-        # We can recover mean_logit from gscores and std_logit from the difference
-        pred_gscores = np.array(pred.gscores)
-        pred_gscores_lower = np.array(pred.gscores_lower)
-
-        mean_logit = logit(pred_gscores)
-        lower_logit = logit(pred_gscores_lower)
-        std_logit = mean_logit - lower_logit  # Since lower = sigmoid(mean_logit - std_logit)
-
-        # Convert true gscores to logit space
-        true_logit = logit(true_gscores) #NOTE: can be 0, we ignore those points for calibration
-
-        # Compute normalized residuals in logit space
-        valid_mask = (std_logit > 1e-8) & np.isfinite(std_logit) & np.isfinite(true_logit)
-        if valid_mask.sum() > 0:
-            residuals = (true_logit[valid_mask] - mean_logit[valid_mask]) / std_logit[valid_mask]
-            all_residuals_normalized.extend(residuals)
-
-    # Calibration factor is the std of normalized residuals
-    all_residuals_normalized = np.array(all_residuals_normalized)
-    calibration_factor = float(np.std(all_residuals_normalized))
-
-    return calibration_factor
 
 
 def train_single_member(
@@ -431,16 +368,12 @@ def main() -> None:
     all_metrics = []
 
     for member_id in range(args.ensemble_size):
-        # Get member-specific seeds
         seeds = derive_member_seeds(args.seed, member_id)
-
-        # Get paths for this member
         member_dir = get_member_dir(ensemble_id, member_id)
         member_dir.mkdir(parents=True, exist_ok=True)
         st_path = member_dir / "st"
         mlp_path = member_dir / "mlp.pt"
 
-        # Train member
         metrics = train_single_member(
             member_id=member_id,
             seeds=seeds,
@@ -493,14 +426,13 @@ def main() -> None:
         logger.info(f"  Using default calibration factor: {calibration_factor:.4f}")
     else:
         logger.info("Computing uncertainty calibration factor on training data...")
-        calibration_factor = compute_calibration_factor(
-            manifest_path=manifest_path,
-            df_data=df_train_pool,
-            esm_cache_path=esm_cache_path,
+        predictor = load_ensemble_predictor(manifest_path)
+        calibration_factor = predictor.compute_calibration_factor(
+            sequences=df_train_pool["sequence"].tolist(),
+            gscores=df_train_pool["gscores"].tolist(),
         )
         logger.info(f"  Calibration factor: {calibration_factor:.4f}")
 
-        # Update manifest with calibration factor
         manifest.calibration_factor = calibration_factor
         manifest.save(manifest_path)
         logger.info("  Manifest updated with calibration factor")

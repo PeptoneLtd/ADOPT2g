@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import scipy.stats
 import torch
+import torch.nn.functional as F
 from sentence_transformers import SentenceTransformer, losses
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -126,7 +127,7 @@ def train_mlp(
     """
     Train the MLP prediction head.
 
-    Uses weighted MSE loss on g-scores (values in [0, 1]).
+    Uses weighted BCE loss on g-scores (values in [0, 1]) for better calibration.
     """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -196,9 +197,9 @@ def train_mlp(
 
             # Mixed precision forward pass
             with torch.autocast(device_type="cuda", enabled=use_amp):
-                pred = model(emb)
-                # Weighted MSE loss
-                loss = (weight * (pred - target) ** 2).mean()
+                logits = model.forward_logits(emb)
+                # Weighted BCE loss for better calibration
+                loss = F.binary_cross_entropy_with_logits(logits, target, weight=weight)
 
             # Scaled backward pass
             scaler.scale(loss).backward()
@@ -222,8 +223,10 @@ def train_mlp(
             with torch.no_grad(), torch.autocast(device_type="cuda", enabled=use_amp):
                 for batch_emb, batch_target, _ in val_loader:
                     emb, target = batch_emb.to(device), batch_target.to(device)
-                    pred = model(emb)
-                    val_loss += ((pred - target) ** 2).sum().item()
+                    logits = model.forward_logits(emb)
+                    # BCE loss for validation (sum, then divide by dataset size)
+                    val_loss += F.binary_cross_entropy_with_logits(logits, target, reduction="sum").item()
+                    pred = torch.sigmoid(logits)
                     all_preds.extend(pred.cpu().numpy())
                     all_targets.extend(target.cpu().numpy())
 
@@ -233,6 +236,11 @@ def train_mlp(
             spearman_corr = scipy.stats.spearmanr(all_targets_arr, all_preds_arr).correlation
             pearson_corr = scipy.stats.pearsonr(all_targets_arr, all_preds_arr)[0]
             val_mae = np.mean(np.abs(all_preds_arr - all_targets_arr))
+
+            # Calibration metrics
+            # Brier score: mean squared error between predictions and targets
+            brier_score = np.mean((all_preds_arr - all_targets_arr) ** 2)
+            # NLL is the same as val_loss (BCE) which we already computed
 
             logger.info(
                 f"Epoch {epoch + 1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, corr={spearman_corr:.4f}"
@@ -244,6 +252,8 @@ def train_mlp(
                     "epoch": epoch + 1,
                     "train/loss": train_loss,
                     "val/loss": val_loss,
+                    "val/nll": val_loss,  # BCE loss is NLL
+                    "val/brier_score": brier_score,
                     "val/mae": val_mae,
                     "val/spearman_corr": spearman_corr,
                     "val/pearson_corr": pearson_corr,

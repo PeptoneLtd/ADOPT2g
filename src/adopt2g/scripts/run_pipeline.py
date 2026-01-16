@@ -419,23 +419,27 @@ def main() -> None:
     logger.info(f"  MSE: mean={np.mean(mse_vals):.4f}, std={np.std(mse_vals):.4f}")
     logger.info(f"  Spearman: mean={np.mean(corr_vals):.4f}, std={np.std(corr_vals):.4f}")
 
-    # Compute calibration factor on training data
+    # Compute calibration factors on training data
     if args.skip_calibration:
-        calibration_factor = 1.0
+        uncertainty_calibration_factor = 1.0
+        temperature_scaling_factor = 1.0
         logger.info("Skipping calibration factor computation (--skip-calibration)")
-        logger.info(f"  Using default calibration factor: {calibration_factor:.4f}")
+        logger.info(f"  Using default temperature scaling factor: {temperature_scaling_factor:.4f}")
+        logger.info(f"  Using default uncertainty calibration factor: {uncertainty_calibration_factor:.4f}")
     else:
-        logger.info("Computing uncertainty calibration factor on training data...")
-        predictor = load_ensemble_predictor(manifest_path)
-        calibration_factor = predictor.compute_calibration_factor(
+        logger.info("Computing calibration factors on training data...")
+        predictor = load_ensemble_predictor(manifest_path, use_calibration=False)
+        temperature_scaling_factor, uncertainty_calibration_factor = predictor.compute_calibration_factors(
             sequences=df_train_pool["sequence"].tolist(),
             gscores=df_train_pool["gscores"].tolist(),
         )
-        logger.info(f"  Calibration factor: {calibration_factor:.4f}")
+        logger.info(f"  Temperature scaling factor: {temperature_scaling_factor:.4f}")
+        logger.info(f"  Uncertainty calibration factor: {uncertainty_calibration_factor:.4f}")
 
-        manifest.calibration_factor = calibration_factor
+        manifest.uncertainty_calibration_factor = uncertainty_calibration_factor
+        manifest.temperature_scaling_factor = temperature_scaling_factor
         manifest.save(manifest_path)
-        logger.info("  Manifest updated with calibration factor")
+        logger.info("  Manifest updated with calibration factors")
 
     # Log ensemble summary to W&B
     if not args.no_wandb:
@@ -472,7 +476,8 @@ def main() -> None:
             "ensemble/kendall_mean": np.mean(kendall_vals),
             "ensemble/kendall_std": np.std(kendall_vals),
             # Calibration
-            "ensemble/calibration_factor": calibration_factor,
+            "ensemble/uncertainty_calibration_factor": uncertainty_calibration_factor,
+            "ensemble/temperature_scaling_factor": temperature_scaling_factor,
         }
 
         # Create a table with all member metrics

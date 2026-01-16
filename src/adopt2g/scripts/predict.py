@@ -99,8 +99,7 @@ Examples:
         manifest_path = latest
 
     # Load predictor with or without calibration
-    calibration_factor = 1.0 if args.no_calibration else None
-    predictor = load_ensemble_predictor(manifest_path, calibration_factor=calibration_factor)
+    predictor = load_ensemble_predictor(manifest_path, use_calibration=not args.no_calibration)
     logger.info("Running ensemble prediction (includes uncertainty estimates)")
     if args.no_calibration:
         logger.info("  Uncertainty calibration disabled (using raw ensemble std)")
@@ -181,13 +180,10 @@ Examples:
     cols = "label, sequence, mean_gscore, mean_gscore_lower, mean_gscore_upper, gscores, gscores_lower, gscores_upper"
     if args.save_member_gscores:
         cols += ", member_gscores"
-    logger.info(f"Columns: {cols}")
-    calibrated_str = "calibrated " if not args.no_calibration else ""
-    logger.info(f"  - mean_gscore_lower/upper: {calibrated_str}confidence bounds for mean_gscore (asymmetric)")
-    logger.info(f"  - gscores_lower/upper: {calibrated_str}per-residue confidence bounds (JSON arrays, asymmetric)")
-    if args.save_member_gscores:
-        logger.info("  - member_gscores: per-residue gscores for each ensemble member (JSON 2D array)")
+        logger.info("  --save-member-gscores: storing per-residue gscores for each ensemble member")
     logger.info("(Use json.loads() to parse JSON array columns)")
+    if args.no_calibration:
+        logger.info("NOTE: Calibration disabled (--no-calibration), reporting raw predictions")
 
 
 if __name__ == "__main__":

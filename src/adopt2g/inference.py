@@ -75,14 +75,16 @@ class EnsembleDisorderPredictor:
         st_models: list[SentenceTransformer],
         mlps: list[DisorderMLP],
         device: str | None = None,
-        calibration_factor: float = 1.0,
+        uncertainty_calibration_factor: float = 1.0,
+        temperature_scaling_factor: float = 1.0,
     ) -> None:
         self.tokenizer = esm_tokenizer
         self.esm_model = esm_model
         self.st_models = st_models
         self.mlps = mlps
         self.ensemble_size = len(st_models)
-        self.calibration_factor = calibration_factor
+        self.uncertainty_calibration_factor = uncertainty_calibration_factor
+        self.temperature_scaling_factor = temperature_scaling_factor
 
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -324,20 +326,25 @@ class EnsembleDisorderPredictor:
                 for m_logits in member_logits:
                     m_logits[mask] = np.nan
 
-            # Apply calibration factor in logit space
-            calibrated_std_logits = std_logits * self.calibration_factor
+            # Apply temperature scaling to logits
+            T = self.temperature_scaling_factor
+            scaled_mean_logits = mean_logits / T
+            scaled_std_logits = std_logits / T
+
+            # Apply uncertainty calibration factor in logit space
+            calibrated_std_logits = scaled_std_logits * self.uncertainty_calibration_factor
 
             # Compute per-residue gscores and bounds via sigmoid
-            gscores = expit(mean_logits)
-            gscores_lower = expit(mean_logits - calibrated_std_logits)
-            gscores_upper = expit(mean_logits + calibrated_std_logits)
+            gscores = expit(scaled_mean_logits)
+            gscores_lower = expit(scaled_mean_logits - calibrated_std_logits)
+            gscores_upper = expit(scaled_mean_logits + calibrated_std_logits)
 
             # Compute sequence-level mean_gscore and bounds
             # Each member's mean logit (across residues), then aggregate
             member_mean_logits = np.array([float(np.nanmean(m_logits)) for m_logits in member_logits])
-            mean_of_mean_logits = np.mean(member_mean_logits)
-            std_of_mean_logits = np.std(member_mean_logits)
-            calibrated_std_of_mean_logits = std_of_mean_logits * self.calibration_factor
+            mean_of_mean_logits = np.mean(member_mean_logits) / T
+            std_of_mean_logits = np.std(member_mean_logits) / T
+            calibrated_std_of_mean_logits = std_of_mean_logits * self.uncertainty_calibration_factor
 
             mean_gscore = float(expit(np.array([mean_of_mean_logits]))[0])
             mean_gscore_lower = float(expit(np.array([mean_of_mean_logits - calibrated_std_of_mean_logits]))[0])
@@ -424,21 +431,21 @@ class EnsembleDisorderPredictor:
 
         return all_predictions
 
-    def compute_calibration_factor(
+    def compute_calibration_factors(
         self,
         sequences: list[str],
         gscores: list[np.ndarray],
         show_progress: bool = True,
-    ) -> float:
+    ) -> tuple[float, float]:
         """
-        Compute calibration factor for uncertainty estimates in logit space.
+        Compute calibration factors for uncertainty estimates and temperature scaling.
 
-        The calibration factor is the standard deviation of normalized residuals
-        computed in logit space:
-        calibration_factor = std((logit(true) - mean_logit) / std_logit)
-
-        If uncertainties are well-calibrated, this should be ~1.0.
-        If uncertainties are under-estimated, this will be > 1.0.
+        Computes two factors:
+        1. Temperature scaling factor (T): Learned by minimizing Bernoulli NLL with soft labels.
+           Logits are divided by T before applying sigmoid.
+        2. Uncertainty calibration factor: Standard deviation of normalized residuals
+           computed in logit space after temperature scaling:
+           uncertainty_factor = std((logit(true) - mean_logit/T) / (std_logit/T))
 
         Args:
             sequences: List of amino acid sequences
@@ -446,54 +453,151 @@ class EnsembleDisorderPredictor:
             show_progress: Whether to show progress bar
 
         Returns:
-            Calibration factor (float)
+            Tuple of (uncertainty_calibration_factor, temperature_scaling_factor)
         """
         assert len(sequences) == len(gscores), f"Got {len(sequences)} sequences but {len(gscores)} gscores"
 
-        # Ensure calibration_factor is 1.0 for standard calibration calculation
-        old_factor = self.calibration_factor
-        if old_factor != 1.0:
+        # Ensure calibration factors are 1.0 for calculation
+        old_uncertainty_factor = self.uncertainty_calibration_factor
+        old_temperature_factor = self.temperature_scaling_factor
+        if old_uncertainty_factor != 1.0 or old_temperature_factor != 1.0:
             logger.warning(
-                f"Computing calibration factor while current factor is {old_factor:.4f}. "
-                "Temporarily setting calibration_factor to 1.0 for calculation.",
+                f"Computing calibration factors while current factors are "
+                f"uncertainty={old_uncertainty_factor:.4f}, temperature={old_temperature_factor:.4f}. "
+                "Temporarily setting both to 1.0 for calculation.",
             )
-            self.calibration_factor = 1.0
+            self.uncertainty_calibration_factor = 1.0
+            self.temperature_scaling_factor = 1.0
 
         try:
-            # Get predictions using current calibration settings
+            # Get predictions using current calibration settings (both = 1.0)
             predictions = self.predict(sequences, show_progress=show_progress)
 
-            # Collect all residue-level normalized residuals in logit space
-            all_residuals_normalized = []
-            for true_gscore, pred in zip(gscores, predictions, strict=True):
-                true_logit = logit(true_gscore)
+            # Collect all residue-level data for temperature scaling
+            all_mean_logits = []
+            all_true_gscores = []
+            all_std_logits = []
 
-                # Get mean logit and std logit from the predictions
+            for true_gscore, pred in zip(gscores, predictions, strict=True):
                 # Since calibration=1.0: gscores = sigmoid(mean_logit)
                 #                        gscores_lower = sigmoid(mean_logit - std_logit)
                 mean_logit = logit(pred.gscores)
                 std_logit = mean_logit - logit(pred.gscores_lower)
 
-                # Compute normalized residuals in logit space
-                valid_mask = np.isfinite(true_logit) & (std_logit > 1e-8) & np.isfinite(std_logit)
+                # Valid mask for temperature scaling (need valid true gscores in [0,1])
+                valid_mask = (
+                    np.isfinite(mean_logit)
+                    & np.isfinite(std_logit)
+                    & (std_logit > 1e-8)
+                    & np.isfinite(true_gscore)
+                    & (true_gscore >= 0.0)
+                    & (true_gscore <= 1.0)
+                )
                 if valid_mask.sum() > 0:
-                    residuals = (true_logit[valid_mask] - mean_logit[valid_mask]) / std_logit[valid_mask]
-                    all_residuals_normalized.extend(residuals)
+                    all_mean_logits.extend(mean_logit[valid_mask])
+                    all_true_gscores.extend(true_gscore[valid_mask])
+                    all_std_logits.extend(std_logit[valid_mask])
 
-            # Calibration factor is the std of normalized residuals
-            calibration_factor = float(np.std(all_residuals_normalized))
+            all_mean_logits = np.array(all_mean_logits)
+            all_true_gscores = np.array(all_true_gscores)
+            all_std_logits = np.array(all_std_logits)
+
+            # Fit temperature scaling by minimizing Bernoulli NLL
+            # BCE(sigmoid(logits/T), y) with soft labels y
+            temperature_scaling_factor = self._fit_temperature_scaling(all_mean_logits, all_true_gscores)
+
+            # Compute uncertainty calibration factor after temperature scaling
+            true_logits = logit(all_true_gscores)
+            mask = np.isfinite(true_logits)  # ingore gscores equal to 0 or 1
+            true_logits = true_logits[mask]
+            scaled_mean_logits = all_mean_logits[mask] / temperature_scaling_factor
+            scaled_std_logits = all_std_logits[mask] / temperature_scaling_factor
+
+            residuals_normalized = (true_logits - scaled_mean_logits) / scaled_std_logits
+            uncertainty_calibration_factor = float(np.std(residuals_normalized))
+
         finally:
-            if old_factor != 1.0:
-                self.calibration_factor = old_factor
+            self.uncertainty_calibration_factor = old_uncertainty_factor
+            self.temperature_scaling_factor = old_temperature_factor
 
-        return calibration_factor
+        return temperature_scaling_factor, uncertainty_calibration_factor
+
+    def _fit_temperature_scaling(
+        self,
+        logits: np.ndarray,
+        targets: np.ndarray,
+        lr: float = 1,
+        max_iter: int = 1000,
+        tol: float = 1e-6,
+    ) -> float:
+        """
+        Fit temperature scaling parameter by minimizing Bernoulli NLL with soft labels.
+
+        Uses quasi-Newton (LBFGS) on log(T) to ensure T > 0.
+
+        Args:
+            logits: Raw model logits
+            targets: Soft labels (ground truth gscores in [0, 1])
+            lr: Learning rate (step size, 1.0 is standard for LBFGS with line search)
+            max_iter: Maximum iterations
+            tol: Convergence tolerance
+
+        Returns:
+            Optimal temperature T
+        """
+        if len(logits) == 0:
+            logger.warning("No valid data for temperature scaling. Returning T=1.0")
+            return 1.0
+
+        logits_t = torch.tensor(logits, dtype=torch.float32)
+        targets_t = torch.tensor(targets, dtype=torch.float32)
+
+        # Parameterize as log(T) to ensure T > 0
+        log_T = torch.tensor(0.0, requires_grad=True)
+        optimizer = torch.optim.LBFGS(
+            [log_T],
+            lr=lr,
+            max_iter=max_iter,
+            tolerance_grad=tol,
+            line_search_fn="strong_wolfe",
+        )
+
+        def closure() -> torch.Tensor:
+            optimizer.zero_grad()
+            T = torch.exp(log_T)
+            scaled_logits = logits_t / T
+            loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                scaled_logits,
+                targets_t,
+                reduction="mean",
+            )
+            if torch.isnan(loss):
+                return torch.tensor(float("inf"))
+            loss.backward()
+            return loss
+
+        try:
+            optimizer.step(closure)
+        except Exception as e:
+            logger.warning(
+                f"Temperature scaling optimization failed: {e}. Falling back to T=1.0",
+            )
+            return 1.0
+
+        temperature = float(torch.exp(log_T).item())
+        if np.isnan(temperature):
+            logger.warning("Temperature scaling resulted in NaN. Falling back to 1.0.")
+            return 1.0
+
+        logger.info(f"  Temperature scaling fitted: T = {temperature:.4f}")
+        return temperature
 
 
 def load_ensemble_predictor(
     ensemble_id_or_manifest: str | Path,
     esm_model_name: str = config.ESM_MODEL_NAME,
     device: str | None = None,
-    calibration_factor: float | None = None,
+    use_calibration: bool = True,
 ) -> EnsembleDisorderPredictor:
     """
     Load an ensemble predictor from manifest.
@@ -503,8 +607,8 @@ def load_ensemble_predictor(
             or a path to manifest.json
         esm_model_name: Name of ESM model on HuggingFace
         device: Device to use (defaults to CUDA if available)
-        calibration_factor: Override the calibration factor from manifest.
-            If None, uses the value from manifest. Set to 1.0 to disable calibration.
+        use_calibration: Whether to use calibration factors from manifest.
+            If False, both uncertainty and temperature scaling factors are set to 1.0.
 
     Returns:
         Ready-to-use EnsembleDisorderPredictor
@@ -529,13 +633,16 @@ def load_ensemble_predictor(
     logger.info(f"  Ensemble ID: {manifest.ensemble_id}")
     logger.info(f"  Ensemble size: {manifest.ensemble_size}")
 
-    # Determine calibration factor
-    if calibration_factor is None:
-        calibration_factor = manifest.calibration_factor
-        logger.info(f"  Calibration factor: {calibration_factor:.4f}")
+    # Determine calibration factors
+    if use_calibration:
+        uncertainty_calibration_factor = manifest.uncertainty_calibration_factor
+        temperature_scaling_factor = manifest.temperature_scaling_factor
+        logger.info(f"  Temperature scaling factor: {temperature_scaling_factor:.4f}")
+        logger.info(f"  Uncertainty calibration factor: {uncertainty_calibration_factor:.4f}")
     else:
-        logger.info(f"  Calibration factor from manifest:  {manifest.calibration_factor:.4f}")
-        logger.info(f"  Using provided calibration factor: {calibration_factor:.4f}")
+        uncertainty_calibration_factor = 1.0
+        temperature_scaling_factor = 1.0
+        logger.info("  Calibration disabled (using raw predictions)")
 
     # Load shared ESM model with Flash Attention if available
     logger.info(f"  Loading ESM model to {device}...")
@@ -573,5 +680,6 @@ def load_ensemble_predictor(
         st_models=st_models,
         mlps=mlps,
         device=device,
-        calibration_factor=calibration_factor,
+        uncertainty_calibration_factor=uncertainty_calibration_factor,
+        temperature_scaling_factor=temperature_scaling_factor,
     )

@@ -68,4 +68,12 @@ python src/adopt2g/scripts/predict.py --input my.fasta --output results.csv
 
 Use `--no-calibration` to output raw ensemble standard deviation as uncertainty.
 
+## CatBoost Baseline
+
+A CatBoost-based baseline is provided for comparison with the main ensemble approach. It uses ESM-2 embeddings and provides built-in uncertainty estimation using the `RMSEWithUncertainty` loss.
+
+- **Train**: `adopt2g-catboost train --output models/catboost`
+- **Search**: `adopt2g-catboost search --output models/catboost_search --n-trials 20`
+- **Predict**: `adopt2g-catboost predict --input proteins.fasta --output results.csv --model models/catboost`
+
 See also `notebooks/plots_train.ipynb` and `notebooks/plots_test.ipynb`.

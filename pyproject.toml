@@ -26,6 +26,7 @@ dependencies = [
     "sentence-transformers",
     "datasets",
     "accelerate",
+    "catboost",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +47,7 @@ attn = [
 [project.scripts]
 adopt2g-predict = "adopt2g.scripts.predict:main"
 adopt2g-train = "adopt2g.scripts.run_pipeline:main"
+adopt2g-catboost = "adopt2g.scripts.catboost_baseline:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

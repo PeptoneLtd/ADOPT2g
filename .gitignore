@@ -26,3 +26,4 @@ models/
 
 .vscode/
 *.egg-info/
+catboost_info/

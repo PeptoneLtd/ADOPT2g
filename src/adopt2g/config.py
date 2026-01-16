@@ -35,9 +35,9 @@ MLP_WEIGHT_DECAY = 1e-3
 MLP_EPOCHS = 50
 MLP_BATCH_SIZE = 4096
 
-# Rebalancing weights for training, see `datasets/visualize.ipynb` for more details
-REBALANCE_A = 16.229
-REBALANCE_B = 10.670
+# Rebalancing weights for training, see `datasets/training_weights.ipynb` for more details
+REBALANCE_A = 21.595
+REBALANCE_B = 10.681
 
 # Input dimensions
 ESM_EMBED_DIM = 1280

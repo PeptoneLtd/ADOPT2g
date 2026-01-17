@@ -595,7 +595,6 @@ class EnsembleDisorderPredictor:
 
 def load_ensemble_predictor(
     ensemble_id_or_manifest: str | Path,
-    esm_model_name: str = config.ESM_MODEL_NAME,
     device: str | None = None,
     use_calibration: bool = True,
 ) -> EnsembleDisorderPredictor:
@@ -605,7 +604,6 @@ def load_ensemble_predictor(
     Args:
         ensemble_id_or_manifest: Either an ensemble ID (looks in default location)
             or a path to manifest.json
-        esm_model_name: Name of ESM model on HuggingFace
         device: Device to use (defaults to CUDA if available)
         use_calibration: Whether to use calibration factors from manifest.
             If False, both uncertainty and temperature scaling factors are set to 1.0.
@@ -632,6 +630,9 @@ def load_ensemble_predictor(
     manifest_dir = manifest_path.parent
     logger.info(f"  Ensemble ID: {manifest.ensemble_id}")
     logger.info(f"  Ensemble size: {manifest.ensemble_size}")
+
+    config_snapshot = manifest.config_snapshot or {}
+    esm_model_name = config_snapshot.get("esm_model", config.ESM_MODEL_NAME)
 
     # Determine calibration factors
     if use_calibration:
@@ -661,11 +662,24 @@ def load_ensemble_predictor(
         st_models.append(st_model)
 
     # Load all MLP heads (resolve relative paths from manifest directory)
-    logger.info(f"  Loading {manifest.ensemble_size} MLP heads...")
+    # Prefer manifest-configured architecture to avoid shape mismatches.
+    mlp_hidden_dims = config_snapshot.get("mlp_hidden_dims", config.MLP_HIDDEN_DIMS)
+    mlp_dropout = config_snapshot.get("mlp_dropout", config.MLP_DROPOUT)
+    mlp_input_dim = config_snapshot.get("esm_embed_dim", config.ESM_EMBED_DIM) + config_snapshot.get(
+        "st_embed_dim",
+        config.ST_EMBED_DIM,
+    )
+
+    logger.info(
+        "  Loading %d MLP heads (hidden_dims=%s, dropout=%.3f)...",
+        manifest.ensemble_size,
+        mlp_hidden_dims,
+        mlp_dropout,
+    )
     mlps = []
     for member in manifest.members:
         mlp_path = manifest_dir / member.mlp_path
-        mlp = DisorderMLP()
+        mlp = DisorderMLP(input_dim=mlp_input_dim, hidden_dims=mlp_hidden_dims, dropout=mlp_dropout)
         # Support both old (raw state_dict) and new (dict with state_dict) formats
         checkpoint = torch.load(mlp_path, weights_only=True, map_location=device)
         if isinstance(checkpoint, dict) and "state_dict" in checkpoint:

@@ -24,19 +24,12 @@ uv pip install torch --index-url https://download.pytorch.org/whl/cu130  # for D
 uv pip install -e ".[dev,train]"
 ```
 
-### Using conda
-
-```bash
-conda env create -f environment.yml
-conda activate adopt2g
-```
-
 ### Optional: Flash Attention
 
 Flash Attention can speed up ESM inference on supported GPUs (currently not DGX-spark):
 
 ```bash
-pip install flash-attn --no-build-isolation
+uv pip install flash-attn --no-build-isolation
 ```
 
 ## Training

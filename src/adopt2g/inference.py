@@ -2,7 +2,7 @@
 
 import gc
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,7 +10,6 @@ import numpy as np
 import torch
 from scipy.special import expit, logit
 from sentence_transformers import SentenceTransformer
-from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from . import config
@@ -146,7 +145,7 @@ class EnsembleDisorderPredictor:
         use_amp = self.device == "cuda"
 
         # Get ST embeddings for all sequences
-        st_embs = st_model.encode(sequences)
+        st_embs = st_model.encode(sequences, show_progress_bar=False)
 
         results = []
         for i, (esm_emb, seq) in enumerate(zip(esm_embeddings, sequences, strict=True)):
@@ -166,9 +165,18 @@ class EnsembleDisorderPredictor:
     def _predict_short_sequences(
         self,
         sequences: list[str],
+        on_esm_start: Callable[[], None] | None = None,
+        on_esm_done: Callable[[], None] | None = None,
+        on_member_done: Callable[[int], None] | None = None,
     ) -> tuple[list[np.ndarray], list[np.ndarray], list[list[np.ndarray]]]:
         """
         Predict logits for sequences within max length.
+
+        Args:
+            sequences: List of amino acid sequences
+            on_esm_start: Callback called before ESM embeddings computation
+            on_esm_done: Callback called after ESM embeddings are computed
+            on_member_done: Callback called after each ensemble member is processed (receives member_idx)
 
         Returns:
             mean_logits: List of mean logits per sequence
@@ -176,13 +184,19 @@ class EnsembleDisorderPredictor:
             all_member_logits: List of [member_0_logits, member_1_logits, ...] per sequence
         """
         # Compute ESM embeddings once (shared)
+        if on_esm_start:
+            on_esm_start()
         esm_embeddings = self._get_esm_embeddings(sequences)
+        if on_esm_done:
+            on_esm_done()
 
         # Get predictions from each member: all_member_logits[member_idx][seq_idx] = logits
         all_member_logits_by_member = []
         for member_idx in range(self.ensemble_size):
             member_logits = self._predict_member_logits(member_idx, esm_embeddings, sequences)
             all_member_logits_by_member.append(member_logits)
+            if on_member_done:
+                on_member_done(member_idx)
 
         # Reorganize to per-sequence and aggregate
         mean_logits = []
@@ -201,35 +215,58 @@ class EnsembleDisorderPredictor:
 
         return mean_logits, std_logits, all_member_logits
 
-    def _predict_long_sequence(self, sequence: str) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
+    def _predict_long_sequence(
+        self,
+        sequence: str,
+        on_esm_start: Callable[[], None] | None = None,
+        on_esm_done: Callable[[], None] | None = None,
+        on_member_done: Callable[[int], None] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
         """
         Predict logits for a long sequence using overlapping chunks.
 
         Each member handles chunks independently, then we aggregate across members.
+
+        Args:
+            sequence: Amino acid sequence longer than max_seq_len
+            on_esm_start: Callback called before ESM embeddings computation
+            on_esm_done: Callback called after ESM embeddings are computed
+            on_member_done: Callback called after each ensemble member is processed (receives member_idx)
 
         Returns:
             mean_logits: Mean logits per residue
             std_logits: Std logits per residue
             member_logits: List of per-member full-sequence logits
         """
-        if len(sequence) <= self._max_seq_len:
-            means, stds, all_member = self._predict_short_sequences([sequence])
+        seq_len = len(sequence)
+
+        if seq_len <= self._max_seq_len:
+            means, stds, all_member = self._predict_short_sequences(
+                [sequence],
+                on_esm_start=on_esm_start,
+                on_esm_done=on_esm_done,
+                on_member_done=on_member_done,
+            )
             return means[0], stds[0], all_member[0]
 
         min_overlap = self._max_seq_len // 2
-        num_chunks = int(np.ceil((len(sequence) - min_overlap) / (self._max_seq_len - min_overlap)))
+        num_chunks = int(np.ceil((seq_len - min_overlap) / (self._max_seq_len - min_overlap)))
         num_chunks = max(2, num_chunks)
-        overlap = int(np.floor((self._max_seq_len * num_chunks - len(sequence)) / (num_chunks - 1)))
+        overlap = int(np.floor((self._max_seq_len * num_chunks - seq_len) / (num_chunks - 1)))
 
         # Split into chunks
         chunks = []
         for i in range(num_chunks):
             start = i * (self._max_seq_len - overlap)
-            end = min(len(sequence), start + self._max_seq_len)
+            end = min(seq_len, start + self._max_seq_len)
             chunks.append(sequence[start:end])
 
         # Get ESM embeddings for chunks (shared)
+        if on_esm_start:
+            on_esm_start()
         esm_embeddings = self._get_esm_embeddings(chunks)
+        if on_esm_done:
+            on_esm_done()
 
         # Get logits from each member for all chunks
         all_member_logits = []  # List of full-sequence arrays per member
@@ -239,16 +276,19 @@ class EnsembleDisorderPredictor:
             chunk_logits = self._predict_member_logits(member_idx, esm_embeddings, chunks)
 
             # Combine chunks into full sequence logits for this member
-            logits = np.zeros(len(sequence), dtype=float)
-            counts = np.zeros(len(sequence), dtype=int)
+            logits = np.zeros(seq_len, dtype=float)
+            counts = np.zeros(seq_len, dtype=int)
 
             for i, chunk_log in enumerate(chunk_logits):
                 start = i * (self._max_seq_len - overlap)
-                end = min(len(sequence), start + self._max_seq_len)
+                end = min(seq_len, start + self._max_seq_len)
                 logits[start:end] += chunk_log
                 counts[start:end] += 1
 
             all_member_logits.append(logits / counts)
+
+            if on_member_done:
+                on_member_done(member_idx)
 
         # Aggregate across members in logit space
         stacked = np.stack(all_member_logits)  # (n_members, seq_len)
@@ -261,6 +301,9 @@ class EnsembleDisorderPredictor:
         self,
         sequences: list[str],
         include_member_gscores: bool = False,
+        on_esm_start: Callable[[], None] | None = None,
+        on_esm_done: Callable[[], None] | None = None,
+        on_member_done: Callable[[int], None] | None = None,
     ) -> list[EnsemblePrediction]:
         """
         Internal method to predict disorder scores for a list of sequences.
@@ -273,6 +316,13 @@ class EnsembleDisorderPredictor:
 
         Non-standard amino acids are replaced with 'X' for prediction,
         and their scores are set to NaN.
+
+        Args:
+            sequences: List of amino acid sequences
+            include_member_gscores: If True, include per-member gscores in the result
+            on_esm_start: Callback called before ESM embeddings computation
+            on_esm_done: Callback called after ESM embeddings are computed
+            on_member_done: Callback called after each ensemble member is processed (receives member_idx)
         """
         # Handle non-standard amino acids
         cleaned_sequences = []
@@ -301,11 +351,21 @@ class EnsembleDisorderPredictor:
                 short_indices.append(i)
                 short_seqs.append(seq)
             else:
-                mean_logit_results[i], std_logit_results[i], member_logits_results[i] = self._predict_long_sequence(seq)
+                mean_logit_results[i], std_logit_results[i], member_logits_results[i] = self._predict_long_sequence(
+                    seq,
+                    on_esm_start=on_esm_start,
+                    on_esm_done=on_esm_done,
+                    on_member_done=on_member_done,
+                )
 
         # Batch predict short sequences
         if short_seqs:
-            short_means, short_stds, short_member_logits = self._predict_short_sequences(short_seqs)
+            short_means, short_stds, short_member_logits = self._predict_short_sequences(
+                short_seqs,
+                on_esm_start=on_esm_start,
+                on_esm_done=on_esm_done,
+                on_member_done=on_member_done,
+            )
             for i, idx in enumerate(short_indices):
                 mean_logit_results[idx] = short_means[i]
                 std_logit_results[idx] = short_stds[i]
@@ -313,7 +373,7 @@ class EnsembleDisorderPredictor:
 
         # Apply NaN mask and compute final predictions
         ensemble_predictions = []
-        for i in range(len(sequences)):
+        for i, seq in enumerate(sequences):
             mask = non_std_masks[i]
             mean_logits = mean_logit_results[i]
             std_logits = std_logit_results[i]
@@ -374,7 +434,9 @@ class EnsembleDisorderPredictor:
         sequences: list[str],
         include_member_gscores: bool = False,
         max_residues_per_batch: int | None = None,
-        show_progress: bool = False,
+        on_esm_start: Callable[[], None] | None = None,
+        on_esm_done: Callable[[], None] | None = None,
+        on_member_done: Callable[[int], None] | None = None,
     ) -> list[EnsemblePrediction]:
         """
         Predict disorder scores with uncertainty for a list of sequences.
@@ -392,7 +454,9 @@ class EnsembleDisorderPredictor:
             sequences: List of amino acid sequences
             include_member_gscores: If True, include per-member gscores in the result
             max_residues_per_batch: Maximum residues per batch (auto-detected if None)
-            show_progress: Whether to show progress bar
+            on_esm_start: Callback called before ESM embeddings computation
+            on_esm_done: Callback called after ESM embeddings are computed
+            on_member_done: Callback called after each ensemble member is processed (receives member_idx)
 
         Returns:
             List of EnsemblePrediction objects with mean, lower/upper bounds
@@ -406,14 +470,21 @@ class EnsembleDisorderPredictor:
 
         if isinstance(sequences, str):
             sequences = [sequences]
-        seq_iter = tqdm(sequences, desc="Predicting", disable=not show_progress)
 
-        for seq in seq_iter:
+        for seq in sequences:
             seq_len = len(seq)
 
             if batch and batch_residues + seq_len > max_residues_per_batch:
                 # Process current batch
-                all_predictions.extend(self._predict_sequences(batch, include_member_gscores=include_member_gscores))
+                all_predictions.extend(
+                    self._predict_sequences(
+                        batch,
+                        include_member_gscores=include_member_gscores,
+                        on_esm_start=on_esm_start,
+                        on_esm_done=on_esm_done,
+                        on_member_done=on_member_done,
+                    ),
+                )
                 batch = []
                 batch_residues = 0
 
@@ -422,7 +493,15 @@ class EnsembleDisorderPredictor:
 
         # Process final batch
         if batch:
-            all_predictions.extend(self._predict_sequences(batch, include_member_gscores=include_member_gscores))
+            all_predictions.extend(
+                self._predict_sequences(
+                    batch,
+                    include_member_gscores=include_member_gscores,
+                    on_esm_start=on_esm_start,
+                    on_esm_done=on_esm_done,
+                    on_member_done=on_member_done,
+                ),
+            )
 
         # Cleanup
         gc.collect()
@@ -435,7 +514,6 @@ class EnsembleDisorderPredictor:
         self,
         sequences: list[str],
         gscores: list[np.ndarray],
-        show_progress: bool = True,
     ) -> tuple[float, float]:
         """
         Compute calibration factors for uncertainty estimates and temperature scaling.
@@ -450,7 +528,6 @@ class EnsembleDisorderPredictor:
         Args:
             sequences: List of amino acid sequences
             gscores: List of numpy arrays with ground truth g-scores per residue
-            show_progress: Whether to show progress bar
 
         Returns:
             Tuple of (uncertainty_calibration_factor, temperature_scaling_factor)
@@ -471,7 +548,7 @@ class EnsembleDisorderPredictor:
 
         try:
             # Get predictions using current calibration settings (both = 1.0)
-            predictions = self.predict(sequences, show_progress=show_progress)
+            predictions = self.predict(sequences)
 
             # Collect all residue-level data for temperature scaling
             all_mean_logits = []

@@ -97,7 +97,7 @@ def sample_st_training_data(
         [
             df_train[df_train["class"] == k].sample(num_samples, random_state=random_state)
             for k in sorted(df_train["class"].unique())
-        ]
+        ],
     )
 
     return balanced_df["sequence"].to_numpy(), balanced_df["class"].to_numpy()
@@ -159,7 +159,7 @@ def prepare_st_training_data(
         [
             df_train[df_train["class"] == k].sample(num_training, random_state=random_state)
             for k in sorted(df_train["class"].unique())  # Sort for deterministic order
-        ]
+        ],
     )
 
     return balanced_df["sequence"].to_numpy(), balanced_df["class"].to_numpy()
@@ -243,9 +243,22 @@ class FastaIterator:
     def __len__(self) -> int:
         if self._length is None:
             with open(self.filename) as f:
-                n_records = sum(1 for line in f if line.startswith(">"))
-            self._length = int(np.ceil(n_records / self.chunk_size))
+                n_seqs = sum(1 for line in f if line.startswith(">"))
+            self._length = int(np.ceil(n_seqs / self.chunk_size))
         return self._length
+
+    def count_sequences_and_residues(self) -> tuple[int, int]:
+        n_seqs = 0
+        n_residues = 0
+        with open(self.filename) as f:
+            for line in f:
+                if line.startswith(">"):
+                    n_seqs += 1
+                else:
+                    n_residues += len(line.strip())
+        if self._length is None:
+            self._length = int(np.ceil(n_seqs / self.chunk_size))
+        return n_seqs, n_residues
 
 
 class CsvIterator:
@@ -269,7 +282,7 @@ class CsvIterator:
         if self.label_col not in df_head.columns or self.sequence_col not in df_head.columns:
             raise ValueError(
                 f"CSV file must contain '{self.label_col}' and '{self.sequence_col}' columns. "
-                f"Found: {df_head.columns.tolist()}"
+                f"Found: {df_head.columns.tolist()}",
             )
 
     def __iter__(self) -> Iterator[list[tuple[str, str]]]:
@@ -278,13 +291,24 @@ class CsvIterator:
                 zip(
                     chunk[self.label_col].astype(str),
                     chunk[self.sequence_col].astype(str),
-                )
+                    strict=True,
+                ),
             )
 
     def __len__(self) -> int:
         if self._length is None:
             # Efficiently count lines for large CSVs
             with open(self.filename, "rb") as f:
-                n_records = sum(1 for _ in f) - 1  # -1 for header
-            self._length = int(np.ceil(n_records / self.chunk_size))
+                n_seqs = sum(1 for _ in f) - 1  # -1 for header
+            self._length = int(np.ceil(n_seqs / self.chunk_size))
         return self._length
+
+    def count_sequences_and_residues(self) -> tuple[int, int]:
+        n_seqs = 0
+        n_residues = 0
+        for chunk in pd.read_csv(self.filename, chunksize=10_000, usecols=[self.sequence_col]):
+            n_seqs += len(chunk)
+            n_residues += chunk[self.sequence_col].str.len().sum()
+        if self._length is None:
+            self._length = int(np.ceil(n_seqs / self.chunk_size))
+        return n_seqs, int(n_residues)

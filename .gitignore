@@ -27,3 +27,5 @@ models/
 .vscode/
 *.egg-info/
 catboost_info/
+colabfold_output/
+af2_human_proteome/

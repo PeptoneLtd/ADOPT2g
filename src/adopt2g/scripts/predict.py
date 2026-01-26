@@ -13,13 +13,11 @@ Usage:
 """
 
 import argparse
-import gc
 import json
 import logging
 from pathlib import Path
 
 import pandas as pd
-import torch
 from tqdm import tqdm
 
 from adopt2g.data import CsvIterator, FastaIterator
@@ -106,8 +104,10 @@ Examples:
     if args.save_member_gscores:
         logger.info("  Saving per-member gscores")
 
-    # Load input data in chunks
+    # Load input data in chunks and count total residues
     seq_iter: CsvIterator | FastaIterator
+    label_col, seq_col = "label", "sequence"
+
     if args.input.suffix.lower() == ".csv":
         try:
             label_col, seq_col = args.csv_cols.split(",")
@@ -125,27 +125,54 @@ Examples:
     else:
         seq_iter = FastaIterator(args.input, chunk_size=args.chunk_size)
         logger.info(f"Loading input from FASTA: {args.input}")
-
+    n_seqs, total_residues = seq_iter.count_sequences_and_residues()
     n_chunks = len(seq_iter)
     n_digits = len(str(n_chunks))
+    logger.info(f"Processing {n_seqs:,} sequences ({total_residues:,} residues) in {n_chunks} chunks")
 
-    logger.info(f"Processing {n_chunks} chunks")
-
-    for chunk_no, records in enumerate(tqdm(seq_iter, total=n_chunks)):
+    for chunk_no, records in enumerate(seq_iter):
         chunk_file = Path(f"{args.output}.{chunk_no:0{n_digits}d}")
 
         if chunk_file.exists():
-            logger.info(f"Chunk {chunk_no} already exists, skipping")
+            print(f"Chunk {chunk_no + 1}/{n_chunks}: already exists, skipping")
             continue
 
         headers, sequences = zip(*records, strict=True)
+        n_seqs_chunk = len(sequences)
+        n_residues_chunk = sum(len(s) for s in sequences)
+
+        print(f"Chunk {chunk_no + 1}/{n_chunks} ({n_seqs_chunk:,} sequences, {n_residues_chunk:,} residues):")
+
+        # Progress tracking with callbacks using a mutable container
+        progress_state: dict[str, tqdm | None] = {"ensemble_pbar": None}
+
+        def on_esm_start(state: dict = progress_state) -> None:  # noqa: B006
+            print("  Computing ESM embeddings...", end="", flush=True)
+
+        def on_esm_done(state: dict = progress_state) -> None:  # noqa: B006
+            print(" done")
+            state["ensemble_pbar"] = tqdm(
+                total=predictor.ensemble_size,
+                desc="  Ensemble",
+                unit="member",
+                leave=True,
+            )
+
+        def on_member_done(member_idx: int, state: dict = progress_state) -> None:  # noqa: B006
+            if state["ensemble_pbar"]:
+                state["ensemble_pbar"].update(1)
 
         # Predict with automatic memory-aware batching
         all_predictions = predictor.predict(
             list(sequences),
             include_member_gscores=args.save_member_gscores,
-            show_progress=True,
+            on_esm_start=on_esm_start,
+            on_esm_done=on_esm_done,
+            on_member_done=on_member_done,
         )
+
+        if progress_state["ensemble_pbar"]:
+            progress_state["ensemble_pbar"].close()
 
         # Save chunk results
         results = []

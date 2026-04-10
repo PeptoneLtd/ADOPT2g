@@ -126,6 +126,9 @@ Examples:
         seq_iter = FastaIterator(args.input, chunk_size=args.chunk_size)
         logger.info(f"Loading input from FASTA: {args.input}")
     n_seqs, total_residues = seq_iter.count_sequences_and_residues()
+    if len(seq_iter) == 0:
+        logger.error(f"No sequences found in input file '{args.input}'")
+        return
     n_chunks = len(seq_iter)
     n_digits = len(str(n_chunks))
     logger.info(f"Processing {n_seqs:,} sequences ({total_residues:,} residues) in {n_chunks} chunks")

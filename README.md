@@ -69,3 +69,19 @@ A CatBoost-based baseline is provided for comparison with the main ensemble appr
 - **Predict**: `adopt2g-catboost predict --input proteins.fasta --output results.csv --model models/catboost`
 
 See also `notebooks/plots_train.ipynb` and `notebooks/plots_test.ipynb`.
+
+## Citation
+
+If you use ADOPT2g in your research, please cite:
+
+```bibtex
+@article{peptone2025,
+  title     = {Advancing Protein Ensemble Predictions Across the Order-Disorder Continuum},
+  author    = {Invernizzi, Michele and Bottaro, Sandro and Streit, Julian O and Trentini, Bruno and Venanzi, Niccolo AE and Reidenbach, Danny and Lee, Youhan and Dallago, Christian and Sirelkhatim, Hassan and Jing, Bowen and Airoldi, Fabio and Lindorff-Larsen, Kresten and Fisicaro, Carlo and Tamiola, Kamil},
+  year      = 2025,
+  journal   = {bioRxiv},
+  publisher = {Cold Spring Harbor Laboratory},
+  doi       = {10.1101/2025.10.18.680935},
+  url       = {https://www.biorxiv.org/content/early/2025/10/19/2025.10.18.680935}
+}
+```

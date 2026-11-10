@@ -8,9 +8,5 @@ dependencies:
   - python=3.12
   - pip
   - pip:
-    # PyTorch with CUDA 13.0 support for DGX Spark
-    - --index-url https://download.pytorch.org/whl/cu130
-    - torch
-    - torchvision
-    # Install adopt2g with dev and train extras in editable mode
+    # Install adopt2g with dev and train extras in editable mode; torch comes from PyPI
     - -e .[dev,train]

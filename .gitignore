@@ -30,3 +30,6 @@ models/
 catboost_info/
 colabfold_output/
 af2_human_proteome/
+
+# Release artefacts
+dist/

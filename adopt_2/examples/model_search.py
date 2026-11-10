@@ -149,9 +149,9 @@ def pedestrian_input_new(
     for k in range(len(indexes)):
         seq = df[df[index_col_name] == indexes[k]].sequence.item()
         if huggingface == True:
-            repr_esm = torch.load(f"{path}{indexes[k]}.pt")["last_hidden_state"][0].clone().cpu().detach()
+            repr_esm = torch.load(f"{path}{indexes[k]}.pt", weights_only=False)["last_hidden_state"][0].clone().cpu().detach()
         else:
-            repr_esm = torch.load(f"{path}{indexes[k]}.pt")["representations"][33].clone().cpu().detach()
+            repr_esm = torch.load(f"{path}{indexes[k]}.pt", weights_only=False)["representations"][33].clone().cpu().detach()
         g_s = np.array(df[df[index_col_name] == indexes[k]][g_col].to_numpy()[0], dtype=float)
         if drop_missing == True:
             idxs = np.where(~np.isnan(g_s))[0]

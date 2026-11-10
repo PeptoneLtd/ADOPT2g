@@ -6,7 +6,7 @@ import numpy as np
 import onnxruntime as rt
 from scipy.special import expit
 from sentence_transformers import SentenceTransformer
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, BitsAndBytesConfig
 
 # sys.path.insert(1, '/home/mambauser/adopt2')
 root_path = os.path.abspath("../../")
@@ -24,7 +24,13 @@ This script contains the building blocks of the model and inference
 # -------------------------------------------------------------------
 model_name = "facebook/esm2_t33_650M_UR50D"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model_8bit = AutoModel.from_pretrained(model_name, device_map="auto", load_in_8bit=True)
+# the pooling layer is not used, and current transformers cannot load it in 8-bit
+model_8bit = AutoModel.from_pretrained(
+    model_name,
+    add_pooling_layer=False,
+    device_map="auto",
+    quantization_config=BitsAndBytesConfig(load_in_8bit=True),
+)
 
 # load the BiEncoder model used for the sequence level representations
 # --------------------------------------------------------------------
@@ -74,7 +80,8 @@ class AdoptTwo:
     def __init__(self, embedder, prediction_head):
         self.embedder = embedder
         self.prediction_head = prediction_head
-        self._max_sequence_len = self.esm_model_8bit.embeddings.position_embeddings.num_embeddings - 2
+        # same value as the size of the old position embedding table, which current transformers removed
+        self._max_sequence_len = self.esm_model_8bit.config.max_position_embeddings - 2
 
     def get_embeddings(self, sequences):
         container = []
@@ -82,6 +89,8 @@ class AdoptTwo:
         for k in self.chunk(sequences):
             seqs = k
             inputs = self.tokenizer(seqs, return_tensors="pt", padding=True)
+            # older transformers moved the inputs to the GPU automatically, current versions do not
+            inputs = {key: value.to(self.esm_model_8bit.device) for key, value in inputs.items()}
 
             try:
                 outputs = self.esm_model_8bit(**inputs)

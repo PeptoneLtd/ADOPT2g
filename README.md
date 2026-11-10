@@ -34,14 +34,16 @@ conda env create -n adopt2g-v1 -f env.yaml
 conda activate adopt2g-v1
 ```
 
-Prediction also works with current versions. It was tested with Python 3.12, PyTorch 2.14,
-transformers 5.17, sentence-transformers 6.1, bitsandbytes 0.50 and onnxruntime 1.30:
+Prediction also works with current versions. It was tested with Python 3.12, PyTorch 2.15,
+transformers 5.22, sentence-transformers 6.2, bitsandbytes 0.50 and onnxruntime 1.31:
 
 ```bash
 pip install torch transformers sentence-transformers accelerate bitsandbytes onnxruntime scipy pandas tqdm
 ```
 
-Prediction needs a CUDA GPU, because ESM-2 is loaded in 8-bit with bitsandbytes.
+Prediction needs a CUDA GPU, because ESM-2 is loaded in 8-bit with bitsandbytes. The head runs on
+the CPU. onnxruntime warns that `TensorrtExecutionProvider` is not available, and this warning can
+be ignored.
 
 ## Model weights
 
@@ -85,9 +87,14 @@ scores are averaged where chunks overlap.
 
 PeptoneBench's values were computed with these weights, with ESM-2 in 8-bit, in batches of 16.
 In 8-bit, the handling of outlier values depends on which sequences share a batch, so a rerun does
-not give exactly the same numbers. On the 439 sequences of PeptoneDB-SAXS, a rerun in batches of 16
-agrees with the published values at a per-residue Pearson correlation of 0.9994, with a mean
-absolute difference of 0.005. No protein's mean G-score moves to the other side of 0.5.
+not give exactly the same numbers.
+
+On the 439 sequences of PeptoneDB-SAXS, running `disorder_prediction.py` with the released weights
+and the current library versions above agrees with the published values as follows:
+
+- per-residue Pearson correlation 0.9994 and mean absolute difference 0.006
+- per-protein mean G-score: mean absolute difference 0.002
+- no protein's mean G-score moves to the other side of 0.5
 
 ## Training
 
@@ -119,6 +126,8 @@ current library versions:
 
 - ESM-2 is loaded with `add_pooling_layer=False` and a `BitsAndBytesConfig`, which current
   transformers needs for 8-bit loading. The pooling layer was never used.
+- The tokenised sequences are moved to the GPU explicitly. Older transformers did this
+  automatically.
 - The maximum chunk length is read from `config.max_position_embeddings`, which gives the same
   value as before.
 - `model_search.py` loads the saved embeddings with `weights_only=False`, which current PyTorch

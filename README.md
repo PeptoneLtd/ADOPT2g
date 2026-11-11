@@ -34,12 +34,18 @@ conda env create -n adopt2g-v1 -f env.yaml
 conda activate adopt2g-v1
 ```
 
-Prediction also works with current versions. It was tested with Python 3.12, PyTorch 2.15,
-transformers 5.22, sentence-transformers 6.2, bitsandbytes 0.50 and onnxruntime 1.31:
+Prediction also works with current versions. `requirements.txt` pins the versions it was tested
+with: Python 3.12, PyTorch 2.15, transformers 5.22, sentence-transformers 6.2, bitsandbytes 0.50,
+onnxruntime 1.31 and all their dependencies:
 
 ```bash
-pip install torch transformers sentence-transformers accelerate bitsandbytes onnxruntime scipy pandas tqdm
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
+
+On Linux, the pinned PyTorch 2.15 uses CUDA 13, which needs an NVIDIA driver of version 580 or
+newer.
 
 Prediction needs a CUDA GPU, because ESM-2 is loaded in 8-bit with bitsandbytes. The head runs on
 the CPU. onnxruntime warns that `TensorrtExecutionProvider` is not available, and this warning can
@@ -90,7 +96,7 @@ In 8-bit, the handling of outlier values depends on which sequences share a batc
 not give exactly the same numbers.
 
 On the 439 sequences of PeptoneDB-SAXS, running `disorder_prediction.py` with the released weights
-and the current library versions above agrees with the published values as follows:
+and the versions in `requirements.txt` agrees with the published values as follows:
 
 - per-residue Pearson correlation 0.9994 and mean absolute difference 0.006
 - per-protein mean G-score: mean absolute difference 0.002

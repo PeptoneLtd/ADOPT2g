@@ -22,9 +22,9 @@ TriZOD from the measured chemical shifts.
 | Weights and training data | The asset of the [v1.0 release](https://github.com/PeptoneLtd/ADOPT2g/releases/tag/v1.0) |
 
 Running v1.0 again reproduces the PeptoneBench values closely, but not exactly. On PeptoneDB-SAXS
-the per-residue Pearson correlation is 0.9994, and no protein's mean G-score changes side of 0.5.
-The small differences come from ESM-2 running in 8-bit, where results depend slightly on which
-sequences share a batch.
+the per-residue Pearson correlation is 0.9994, and the mean G-score of each protein changes by at
+most 0.03. The small differences come from ESM-2 running in 8-bit, where results depend slightly on
+which sequences share a batch and vary slightly between runs.
 
 ## How v1.0 and v2.0 differ
 

@@ -41,6 +41,10 @@ repository. Only the scores it produced are used.
 > Haak M, Senoner T, Schlensok J, Wagemann D, Rost B. TriZOD Dataset 2024-05-09. figshare, 2024.
 > [doi:10.6084/m9.figshare.25792035.v1](https://doi.org/10.6084/m9.figshare.25792035.v1)
 
+> Schlensok J, Wagemann D, Senoner T, Haak M, Rost B. UdonPred: untangling protein intrinsic
+> disorder prediction. *bioRxiv.* 2026.
+> [doi:10.64898/2026.01.26.701679](https://doi.org/10.64898/2026.01.26.701679)
+
 ### DisProt
 
 Sequences and consensus structural-state annotations come from [DisProt](https://disprot.org),

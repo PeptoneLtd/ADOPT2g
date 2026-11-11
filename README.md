@@ -92,15 +92,16 @@ scores are averaged where chunks overlap.
 ### Reproducing PeptoneBench
 
 PeptoneBench's values were computed with these weights, with ESM-2 in 8-bit, in batches of 16.
-In 8-bit, the handling of outlier values depends on which sequences share a batch, so a rerun does
-not give exactly the same numbers.
+In 8-bit, the handling of outlier values depends on which sequences share a batch, and the results
+also vary slightly from one GPU run to the next, so a rerun does not give exactly the same numbers.
 
-On the 439 sequences of PeptoneDB-SAXS, running `disorder_prediction.py` with the released weights
-and the versions in `requirements.txt` agrees with the published values as follows:
+On the 439 sequences of PeptoneDB-SAXS, two runs of `disorder_prediction.py` with the released
+weights and the versions in `requirements.txt` agreed with the published values as follows:
 
 - per-residue Pearson correlation 0.9994 and mean absolute difference 0.006
-- per-protein mean G-score: mean absolute difference 0.002
-- no protein's mean G-score moves to the other side of 0.5
+- per-protein mean G-score: mean absolute difference 0.002, and at most 0.03
+- a protein whose mean G-score is close to 0.5 can move to the other side of it: SASDA57, at 0.498
+  in PeptoneBench, gave 0.501 in one of the two runs
 
 ## Training
 

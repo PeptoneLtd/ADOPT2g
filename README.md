@@ -23,16 +23,23 @@ Overview of most relevant implementation details:
 
 ## Installation
 
-### Using uv
+ADOPT2g uses Python 3.12. `uv.lock` pins every dependency to the version ADOPT2g v2.0 was trained
+and tested with. Install them with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv venv --python 3.12
+uv sync --locked
 source .venv/bin/activate
-uv pip install -e ".[dev,train]"
 ```
 
-For inference only, `uv pip install -e .` is enough. The `train` extra adds Weights & Biases logging,
-and `dev` adds Jupyter, plotting and linting tools.
+This is enough for prediction. Training also needs `--extra train`, which adds Weights & Biases,
+and `--extra dev` adds Jupyter, plotting and linting tools.
+
+On Linux, the pinned PyTorch 2.14 uses CUDA 13.0, which needs an NVIDIA driver of version 580 or
+newer.
+
+Without uv, `pip install -e .` installs versions within the ranges in `pyproject.toml`, and so does
+`environment.yml` in a conda environment. These ranges start at the tested versions but do not pin
+them exactly.
 
 ### Trained models
 
@@ -53,15 +60,16 @@ use, ESM-2 650M (about 2.6 GB) is downloaded from Hugging Face.
 
 ### Optional: Flash Attention
 
-Flash Attention 2 can speed up ESM-2 inference on supported GPUs. It is not installed by default,
-because it is compiled against your PyTorch and CUDA versions. Install it separately:
+Flash Attention 2 can speed up ESM-2 inference on supported GPUs. It is not part of the pinned
+environment, because it is compiled against your PyTorch and CUDA versions. Install it separately:
 
 ```bash
 uv pip install flash-attn --no-build-isolation
 ```
 
-ADOPT2g uses it automatically when it is available on a GPU, and otherwise falls back to PyTorch's
-built-in attention.
+`uv sync` removes packages that are not in `uv.lock`, so run later syncs with `--inexact`. ADOPT2g
+uses Flash Attention automatically when it is available on a GPU, and otherwise falls back to
+PyTorch's built-in attention.
 
 ## Training
 

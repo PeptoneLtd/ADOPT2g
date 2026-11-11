@@ -27,10 +27,11 @@ def load_esm_model(
         device: Device to load model on (defaults to CUDA if available)
         use_flash_attention: Whether to use Flash Attention 2 for faster inference
     """
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    revision = config.HF_REVISIONS.get(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
 
     # Try to use Flash Attention 2 for faster inference on supported GPUs
-    model_kwargs = {"dtype": torch.float16}
+    model_kwargs = {"dtype": torch.float16, "revision": revision}
     if use_flash_attention and torch.cuda.is_available():
         try:
             model = AutoModel.from_pretrained(

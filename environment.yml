@@ -8,5 +8,6 @@ dependencies:
   - python=3.12
   - pip
   - pip:
-    # Install adopt2g with dev and train extras in editable mode; torch comes from PyPI
+    # Install adopt2g with dev and train extras in editable mode, with versions within the ranges
+    # in pyproject.toml. For the exact tested versions, use `uv sync --locked` instead.
     - -e .[dev,train]

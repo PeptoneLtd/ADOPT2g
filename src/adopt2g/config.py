@@ -14,6 +14,13 @@ ESM_MODEL_NAME = "facebook/esm2_t33_650M_UR50D"
 # Sentence transformer base model for sequence-level embeddings (dim 320)
 ST_BASE_MODEL = "facebook/esm2_t6_8M_UR50D"
 
+# Hugging Face commits of the ESM-2 models, so that a later change to their repositories cannot
+# change the embeddings
+HF_REVISIONS = {
+    ESM_MODEL_NAME: "08e4846e537177426273712802403f7ba8261b6c",
+    ST_BASE_MODEL: "c731040fcd8d73dceaa04b0a8e6329b345b0f5df",
+}
+
 # Dataset files
 TRIZOD_DATASET = DATASETS_PATH / "cleaned_trizod_dataset.csv"
 ST_CLASSES_DATASET = DATASETS_PATH / "st_classes.csv"

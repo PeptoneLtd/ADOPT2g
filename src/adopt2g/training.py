@@ -64,7 +64,7 @@ def train_sentence_transformer(
 
     Uses cosine similarity loss on positive/negative sequence pairs.
     """
-    model = SentenceTransformer(base_model)
+    model = SentenceTransformer(base_model, revision=config.HF_REVISIONS.get(base_model))
     logger.info(f"SentenceTransformer device: {model.device}")
 
     # Generate training pairs

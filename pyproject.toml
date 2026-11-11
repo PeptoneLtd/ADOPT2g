@@ -11,27 +11,29 @@ version = "2.0.0"
 description = "ADOPT2g: Disorder predictor based on ESM embeddings and TriZOD G-scores"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
     { name = "Michele Invernizzi", email = "michele@peptone.io" },
 ]
 
+# Lower bounds are the versions ADOPT2g v2.0 was trained and tested with; uv.lock pins them exactly.
+# Upper bounds stop at the next major version, which may break the code or the saved models.
 dependencies = [
-    "torch",
-    "numpy",
-    "pandas",
-    "scipy",
-    "tqdm",
-    "transformers",
-    "sentence-transformers",
-    "datasets",
-    "accelerate",
-    "catboost",
+    "torch>=2.14,<3",
+    "numpy>=2.5,<3",
+    "pandas>=3.0,<4",
+    "scipy>=1.18,<2",
+    "tqdm>=4.70,<5",
+    "transformers>=5.17,<6",
+    "sentence-transformers>=6.1,<7",
+    "datasets>=5.0,<6",
+    "accelerate>=1.15,<2",
+    "catboost>=1.2.10,<2",
 ]
 
 [project.optional-dependencies]
 train = [
-    "wandb",
+    "wandb>=0.31,<1",
 ]
 dev = [
     "jupyterlab",
@@ -39,9 +41,6 @@ dev = [
     "ipykernel",
     "black",
     "ruff",
-]
-attn = [
-    "flash-attn",
 ]
 
 [project.scripts]
@@ -56,8 +55,6 @@ include = ["adopt2g*"]
 [tool.black]
 line-length = 100
 target-version = [
-    "py310",
-    "py311",
     "py312",
 ]
 
